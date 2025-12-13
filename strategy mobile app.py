@@ -6,7 +6,7 @@ from datetime import datetime
 # ==============================================================================
 # CONFIGURATION & ASSETS
 # ==============================================================================
-st.set_page_config(page_title="Strategy: Friday Close", layout="wide")
+st.set_page_config(page_title="Strategy Roth IRA: Friday Close", layout="wide")
 
 ASSETS = {
     'TECH_3X': 'TQQQ', 'TECH_2X': 'QLD',
@@ -182,7 +182,7 @@ def analyze_strategy(data):
 # MAIN UI LAYOUT
 # ==============================================================================
 
-st.title("Roth IRA Strategy: Friday Close")
+st.title("Roth IRA Strategy ΠΟΛΛΑ ΛΕΦΤΑ: Friday Close")
 st.markdown(f"*Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}*")
 
 # Button to refresh data
