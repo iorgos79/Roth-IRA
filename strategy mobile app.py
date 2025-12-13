@@ -10,7 +10,7 @@ import time
 # ==============================================================================
 STRATEGY_DOCS = """
 **FREQUENCY:** Execute WEEKLY on Fridays between 3:30 PM and 4:00 PM EST.  
-**EXCEPTION:** DAILY Safety Check (Macro Filter) executed ONLY between 3:45PM and 4:00PM.
+**EXCEPTION:** DAILY Safety Check (Macro Filter) ONLY between 3:45PM and 4:00PM.
 
 **OBJECTIVE:** Capture aggressive growth in Bull Markets while avoiding major drawdowns using Macro Filters, Asset Rotation, and Momentum Confirmation.
 
