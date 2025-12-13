@@ -65,7 +65,7 @@ def fetch_data_with_retry(tickers, retries=3):
     for i in range(retries):
         try:
             # Download 2 years to ensure valid 200 SMA
-            data = yf.download(tickers, period="2y", progress=False)['Close']
+            data = yf.download(tickers, period="2y", progress=False)['Adj Close']
             if not data.empty:
                 return data
         except Exception as e:
