@@ -73,7 +73,7 @@ def fetch_data_with_retry(tickers, retries=3):
     return pd.DataFrame() # Return empty if all fail
 
 # --- MAIN UI ---
-st.title("ROTH STRATEGY: Friday 3:30PM EST")
+st.title("ROTH STRATEGY: Friday 3:30PM")
 st.caption(f"Server Time: {get_est_time().strftime('%Y-%m-%d %I:%M %p EST')}")
 
 with st.expander("📄 Strategy Documentation (Click to Expand)"):
