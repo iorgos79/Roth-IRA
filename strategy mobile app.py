@@ -60,17 +60,53 @@ def get_est_time():
     est = pytz.timezone('US/Eastern')
     return utc_now.astimezone(est)
 
-def fetch_data_with_retry(tickers, retries=3):
-    """Robust fetcher that handles yfinance timeouts."""
-    for i in range(retries):
-        try:
-            # Download 2 years to ensure valid 200 SMA
-            data = yf.download(tickers, period="2y", progress=False)['Adj Close']
-            if not data.empty:
-                return data
-        except Exception as e:
-            time.sleep(1)
-    return pd.DataFrame() # Return empty if all fail
+def fetch_data_with_retry(tickers):
+    # Try fetching all at once first (fastest)
+    try:
+        # Use auto_adjust=False but grab 'Adj Close' to be safe
+        data = yf.download(tickers, period="2y", progress=False, auto_adjust=False)
+        
+        # Check if we got a MultiIndex (common with multiple tickers)
+        if isinstance(data.columns, pd.MultiIndex):
+            # If 'Adj Close' exists, use it. Otherwise fallback to 'Close'
+            if 'Adj Close' in data.columns.levels[0]:
+                data = data['Adj Close']
+            elif 'Close' in data.columns.levels[0]:
+                print("WARNING: 'Adj Close' missing. Using 'Close' (Dividends will skew signals).")
+                data = data['Close']
+        else:
+            # Single level columns, sometimes yfinance returns this structure
+            if 'Adj Close' in data:
+                data = data['Adj Close']
+            else:
+                data = data['Close']
+
+        # Verify we actually have data
+        if data.empty or data.shape[1] < len(tickers):
+            raise ValueError("Incomplete data returned")
+            
+        return data
+
+    except Exception as e:
+        print(f"Bulk download failed: {e}. Retrying individually...")
+        
+        # Fallback: Download one by one and combine (Slower but 99% reliable)
+        combined_data = {}
+        for t in tickers:
+            try:
+                # auto_adjust=True makes 'Close' = Adjusted Close automatically
+                df = yf.download(t, period="2y", progress=False, auto_adjust=True)
+                if not df.empty:
+                    combined_data[t] = df['Close'] # Because auto_adjust=True, 'Close' IS Adjusted
+                else:
+                    print(f"Failed to fetch {t}")
+            except Exception as e2:
+                print(f"Error fetching {t}: {e2}")
+        
+        if not combined_data:
+            return None
+            
+        return pd.DataFrame(combined_data)
 
 # --- MAIN UI ---
 st.title("ROTH STRATEGY: Friday 3:30PM")
