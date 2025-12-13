@@ -6,12 +6,11 @@ import pytz
 import time
 
 # ==============================================================================
-# STRATEGY DOCUMENTATION
+# STRATEGY DETAILS
 # ==============================================================================
 STRATEGY_DOCS = """
-**STRATEGY NAME:** ROTH IRA "FRIDAY CLOSE" STRATEGY  
 **FREQUENCY:** Execute WEEKLY on Fridays between 3:30 PM and 4:00 PM EST.  
-**EXCEPTION:** DAILY Safety Check (Macro) executed ONLY at 3:45PM.
+**EXCEPTION:** DAILY Safety Check (Macro Filter) executed ONLY between 3:45PM and 4:00PM.
 
 **OBJECTIVE:** Capture aggressive growth in Bull Markets while avoiding major drawdowns using Macro Filters, Asset Rotation, and Momentum Confirmation.
 
@@ -301,7 +300,7 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
 # --- LEGEND ---
 st.markdown("---")
 st.subheader("Strategy Rules & Legend")
-st.info("EXECUTION: Fridays 3:30PM - 4:00PM EST. EXCEPT for Daily Macro at 3:45PM")
+st.info("EXECUTION: Fridays 3:30PM - 4:00PM EST. EXCEPT for Daily Macro 3:45PM - 4:00PM")
 
 with st.expander("Show Detailed Legend", expanded=True):
     st.markdown("""
