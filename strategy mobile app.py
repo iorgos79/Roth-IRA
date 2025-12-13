@@ -6,7 +6,7 @@ from datetime import datetime
 # ==============================================================================
 # CONFIGURATION & ASSETS
 # ==============================================================================
-st.set_page_config(page_title="Roth Strategy: Friday Close", layout="wide")
+st.set_page_config(page_title="Strategy: Friday Close", layout="wide")
 
 ASSETS = {
     'TECH_3X': 'TQQQ', 'TECH_2X': 'QLD',
