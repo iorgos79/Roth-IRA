@@ -182,7 +182,7 @@ def analyze_strategy(data):
 # MAIN UI LAYOUT
 # ==============================================================================
 
-st.title("Roth IRA ΠΟΛΛΑ ΛΕΦΤΑ: Friday Close")
+st.title("Roth IRA ΧΡΗΜΑ: Friday Close")
 st.markdown(f"*Last Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S EST')}*")
 
 # Button to refresh data
