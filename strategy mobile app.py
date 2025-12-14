@@ -144,6 +144,19 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
             st.error(f"CRITICAL DATA MISSING (NaN): {missing_str}\n\nMarket data may be delayed or unavailable. Please try again in 15 minutes.")
             st.stop()
 
+        # --- TIMESTAMP VALIDATION ---
+        # 1. Get correct dates
+        last_market_date = data.index[-1].date()
+        est_now = get_est_time()
+        current_est_date = est_now.date()
+
+        # 2. Only check freshness on Weekdays (Mon-Fri)
+        # (weekday 0=Mon, 4=Fri. So < 5 means it is a weekday)
+        if current_est_date.weekday() < 5:
+            if last_market_date != current_est_date:
+                st.error(f"⚠️ DATA IS STALE! \n\nLast Market Date: {last_market_date}\nToday: {current_est_date}\n\nThe API has not returned today's price yet. Please wait.")
+                st.stop()
+
         # 2. Extract Time Slices
         cur = data.iloc[-1]       # Today
         prev_20 = data.iloc[-21]  # 20 Trading Days ago
