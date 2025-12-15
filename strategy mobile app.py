@@ -122,11 +122,12 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
     status_placeholder.info("Fetching Market Data...")
 
     try:
+        with st.spinner("Fetching Market Data..."):
         # 1. Get Data
         data = fetch_data_with_retry(TICKERS)
         
         # --- DATA INTEGRITY CHECK ---
-        if data.empty:
+        if data is None or data.empty:
             status_placeholder.empty()
             st.error("Connection Failed: No data returned from API.")
             st.stop()
