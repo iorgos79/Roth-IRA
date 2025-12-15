@@ -68,18 +68,20 @@ def fetch_data_with_retry(tickers):
         
         # Check if we got a MultiIndex (common with multiple tickers)
         if isinstance(data.columns, pd.MultiIndex):
-            # If 'Adj Close' exists, use it. Otherwise fallback to 'Close'
+            # STRICT CHECK: We MUST have 'Adj Close'
             if 'Adj Close' in data.columns.levels[0]:
                 data = data['Adj Close']
-            elif 'Close' in data.columns.levels[0]:
-                print("WARNING: 'Adj Close' missing. Using 'Close' (Dividends will skew signals).")
-                data = data['Close']
+            else:
+                # If Adjusted Close is missing, we FAIL rather than guessing.
+                raise ValueError("Source data missing 'Adj Close'. Dividend adjustments unavailable.")
         else:
-            # Single level columns, sometimes yfinance returns this structure
+            # Single level columns
             if 'Adj Close' in data:
                 data = data['Adj Close']
             else:
-                data = data['Close']
+                # Only allow fallback for single tickers if absolutely necessary, 
+                # but better to rely on auto_adjust=True in the loop below if this fails.
+                data = data['Close'] 
 
         # Verify we actually have data
         if data.empty or data.shape[1] < len(tickers):
