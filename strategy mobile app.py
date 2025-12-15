@@ -36,7 +36,7 @@ STRATEGY_DOCS = """
 * **IF SIGNAL IS RED (DEFENSE ROTATION):** * Check US Dollar (UUP) Trend (vs 63 SMA).  
     * Check Gold (GLD) Trend (vs 200 SMA).
     * **SCENARIO A (CRASH/DEFLATION):** Stocks RED + Dollar UP (Flight to Safety) -> ACTION: Buy HEDGE BASKET (40% KMLM / 40% BTAL / 20% UUP)  
-    * **SCENARIO B (STAGFLATION / DEVALUATION):** Stocks RED + Dollar DOWN + Gold UP -> ACTION: Buy GOLD (GLD) - "The Golden Parachute"  
+    * **SCENARIO B (STAGFLATION / DEVALUATION):** Stocks RED + Dollar DOWN + Gold UP -> ACTION: Buy GOLD HEDGE BASKET (40% KMLM / 40% BTAL / 20% GLD)  
     * **SCENARIO C (TOTAL APATHY / CHOP):** Stocks RED + Dollar DOWN + Gold DOWN -> ACTION: Buy CASH (SGOV)
 """
 
@@ -47,7 +47,7 @@ ASSETS = {
     'TECH_3X': 'TQQQ', 'TECH_2X': 'QLD',
     'SPY_3X':  'UPRO', 'SPY_2X':  'SSO',
     'HEDGE':   '40% KMLM / 40% BTAL / 20% UUP',
-    'GOLD':    '100% GLD (Gold)',
+    'GOLD HEDGE':    '40% KMLM / 40% BTAL / 20% GLD',
     'CASH':    '100% SGOV (Treasury Bills)'
 }
 
@@ -260,8 +260,8 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
                 asset_desc = ASSETS['HEDGE']
                 why = "Risk Off + Dollar Rising (Deflation Defense)."
             elif gold_trending_up:
-                asset_name = "GOLD"
-                asset_desc = ASSETS['GOLD']
+                asset_name = "GOLD HEDGE"
+                asset_desc = ASSETS['GOLD HEDGE']
                 why = "Risk Off + Dollar Falling + Gold Up (Stagflation Defense)."
             else:
                 asset_name = "CASH"
