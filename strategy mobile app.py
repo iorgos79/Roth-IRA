@@ -145,6 +145,16 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
             missing_str = ", ".join(nan_tickers)
             st.error(f"CRITICAL DATA MISSING (NaN): {missing_str}\n\nMarket data may be delayed or unavailable. Please try again in 15 minutes.")
             st.stop()
+            # --- HISTORY LENGTH CHECK (Prevent Silent Failures) ---
+        # We need at least 200 days for SMA calculation. 
+        # If QQQ has 100 days, SMA is NaN, creating a FALSE SELL signal.
+        MIN_HISTORY = 205
+        short_history_tickers = []
+        for t in ['SPY', 'QQQ', 'GLD', 'UUP']:
+            # Count valid non-NaN rows
+            valid_days = data[t].notna().sum()
+            if valid_days < MIN_HISTORY:
+                short_history_tickers.append(f"{t} ({valid_days} days)")
 
         # --- TIMESTAMP VALIDATION ---
         # 1. Get correct dates
