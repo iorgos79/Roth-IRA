@@ -369,6 +369,6 @@ with st.expander("Show Detailed Legend", expanded=True):
     * **FRIDAY CHECK (3:30 PM):**
         * :green[**GREEN**] = Price > SMA + MACD Bullish (Positive Momentum).
         * :orange[**YELLOW**] = Price > SMA but MACD Bearish (Weak Trend). Hold Position.
-        * :red[**RED (HEDGE)**] = Price < SMA (Check Defense: Hedge -> Gold -> Cash).
+        * :red[**RED (HEDGE)**] = Price < SMA (Check Defense: Hedge -> Gold Hedge -> Cash).
     * :red[**SAFETY**]: Always maintain 30% Trailing Stop GTC for Black Swans.
     """)
