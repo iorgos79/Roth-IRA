@@ -29,7 +29,7 @@ STRATEGY_DOCS = """
 
 * **IF SIGNAL IS GREEN (RISK ON):** * IF VIX < 20: Buy 3x Leverage (TQQQ or UPRO).  
     * IF VIX >= 20: Buy 2x Leverage (QLD or SSO).  
-    * SAFETY: Set 30% Trailing Stop Loss (GTC) immediately. (Only for Black Swan events. Do not touch otherwise).
+    * SAFETY: Set 35% Trailing Stop Loss (GTC) immediately. (Only for Black Swan events. Do not touch otherwise).
 
 * **IF SIGNAL IS YELLOW (TRANSITION):** * HOLD current position. Do not buy, do not sell.
 
@@ -282,7 +282,7 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
                 ticker = ASSETS[f'{target_idx}_2X']
                 lev = "2x"
             
-            msg = f"### 🟢 GREEN SIGNAL: BUY{time_suffix}\n\n**BUY 100% {ticker} ({lev})**\n\n*Price > SMA and MACD Bullish. Set 30% Trailing Stop GTC.*"
+            msg = f"### 🟢 GREEN SIGNAL: BUY{time_suffix}\n\n**BUY 100% {ticker} ({lev})**\n\n*Price > SMA and MACD Bullish. Set 35% Trailing Stop GTC.*"
             
             if "WAIT" in time_suffix:
                 st.success(msg, icon="⏳") # Show as green but with hourglass if waiting
@@ -370,5 +370,5 @@ with st.expander("Show Detailed Legend", expanded=True):
         * :green[**GREEN**] = Price > SMA + MACD Bullish (Positive Momentum).
         * :orange[**YELLOW**] = Price > SMA but MACD Bearish (Weak Trend). Hold Position.
         * :red[**RED (HEDGE)**] = Price < SMA (Check Defense: Hedge -> Gold Hedge -> Cash).
-    * :red[**SAFETY**]: Always maintain 30% Trailing Stop GTC for Black Swans.
+    * :red[**SAFETY**]: Always maintain 35% Trailing Stop GTC for Black Swans.
     """)
