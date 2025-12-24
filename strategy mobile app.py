@@ -33,10 +33,10 @@ STRATEGY_DOCS = """
 
 * **IF SIGNAL IS YELLOW (TRANSITION):** * HOLD current position. Do not buy, do not sell.
 
-* **IF SIGNAL IS RED (DEFENSE ROTATION):** * Check US Dollar (UUP) Trend (vs 63 SMA).  
-    * Check Gold (GLD) Trend (vs 200 SMA).
-    * **SCENARIO A (CRASH/DEFLATION):** Stocks RED + Dollar UP (Flight to Safety) -> ACTION: Buy HEDGE BASKET (40% KMLM / 40% BTAL / 20% UUP)  
-    * **SCENARIO B (STAGFLATION / DEVALUATION):** Stocks RED + Dollar DOWN + Gold UP -> ACTION: Buy GOLD HEDGE BASKET (40% KMLM / 40% BTAL / 20% GLD)  
+* **IF SIGNAL IS RED (DEFENSE ROTATION):** * Check US Dollar (usdu) Trend (vs 63 SMA).  
+    * Check Gold (GLDM) Trend (vs 200 SMA).
+    * **SCENARIO A (CRASH/DEFLATION):** Stocks RED + Dollar UP (Flight to Safety) -> ACTION: Buy HEDGE BASKET (40% KMLM / 40% BTAL / 20% USDU)  
+    * **SCENARIO B (STAGFLATION / DEVALUATION):** Stocks RED + Dollar DOWN + Gold UP -> ACTION: Buy GOLD HEDGE BASKET (40% KMLM / 40% BTAL / 20% GLDM) 
     * **SCENARIO C (TOTAL APATHY / CHOP):** Stocks RED + Dollar DOWN + Gold DOWN -> ACTION: Buy CASH (SGOV)
 """
 
@@ -46,12 +46,12 @@ st.set_page_config(page_title="Roth Strategy", layout="centered")
 ASSETS = {
     'TECH_3X': 'TQQQ', 'TECH_2X': 'QLD',
     'SPY_3X':  'UPRO', 'SPY_2X':  'SSO',
-    'HEDGE':   '40% KMLM / 40% BTAL / 20% UUP',
-    'GOLD HEDGE':    '40% KMLM / 40% BTAL / 20% GLD',
+    'HEDGE':   '40% KMLM / 40% BTAL / 20% USDU',
+    'GOLD HEDGE':    '40% KMLM / 40% BTAL / 20% GLDM',
     'CASH':    '100% SGOV (Treasury Bills)'
 }
 
-TICKERS = ['SPY', 'QQQ', 'HYG', 'IEI', 'UUP', 'GLD', '^VIX', '^VIX3M']
+TICKERS = ['SPY', 'QQQ', 'HYG', 'IEI', 'USDU', 'GLDM', '^VIX', '^VIX3M']
 
 # --- HELPER FUNCTIONS ---
 def get_est_time():
@@ -150,11 +150,16 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
         # If QQQ has 100 days, SMA is NaN, creating a FALSE SELL signal.
         MIN_HISTORY = 205
         short_history_tickers = []
-        for t in ['SPY', 'QQQ', 'GLD', 'UUP']:
+        for t in ['SPY', 'QQQ', 'GLDM', 'USDU']:
             # Count valid non-NaN rows
             valid_days = data[t].notna().sum()
             if valid_days < MIN_HISTORY:
                 short_history_tickers.append(f"{t} ({valid_days} days)")
+        
+        if short_history_tickers:
+            missing_str = ", ".join(short_history_tickers)
+            st.error(f"⚠️ INSUFFICIENT DATA HISTORY:\n\n{missing_str}\n\nStrategy requires 205+ days for valid SMA/MACD.\nYahoo Finance returned incomplete data.")
+            st.stop()
 
         # --- TIMESTAMP VALIDATION ---
         # 1. Get correct dates
@@ -206,10 +211,10 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
         macd_bullish = macd_line.iloc[-1] > signal_line.iloc[-1]
 
         # D. Defensive Trends
-        sma_uup_63 = data['UUP'].rolling(63).mean().iloc[-1] 
-        sma_gold_200 = data['GLD'].rolling(200).mean().iloc[-1] 
-        uup_trending_up = cur['UUP'] > sma_uup_63
-        gold_trending_up = cur['GLD'] > sma_gold_200
+        sma_USDU_63 = data['USDU'].rolling(63).mean().iloc[-1] 
+        sma_gold_200 = data['GLDM'].rolling(200).mean().iloc[-1] 
+        USDU_trending_up = cur['USDU'] > sma_USDU_63
+        gold_trending_up = cur['GLDM'] > sma_gold_200
 
         # --- LOGIC ENGINE ---
 
@@ -255,7 +260,7 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
         # --- RED LOGIC (Risk Off) ---
         if (not macro_safe) or (trend_status == "RED"):
             # Sub-Logic: Which defense?
-            if uup_trending_up:
+            if USDU_trending_up:
                 asset_name = "HEDGE"
                 asset_desc = ASSETS['HEDGE']
                 why = "Risk Off + Dollar Rising (Deflation Defense)."
@@ -342,18 +347,18 @@ if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
             st.subheader("3. Defense Select")
             
             # Dollar
-            uup_stat_txt = "UP" if uup_trending_up else "DOWN"
-            uup_color = "green" if uup_trending_up else "red"
-            st.metric("Dollar ($UUP)", f"${cur['UUP']:.2f}")
-            st.markdown(f":{uup_color}[**TREND: {uup_stat_txt}**]")
+            USDU_stat_txt = "UP" if USDU_trending_up else "DOWN"
+            USDU_color = "green" if USDU_trending_up else "red"
+            st.metric("Dollar ($USDU)", f"${cur['USDU']:.2f}")
+            st.markdown(f":{USDU_color}[**TREND: {USDU_stat_txt}**]")
             
             st.divider()
             
             # Gold
-            gld_stat_txt = "UP" if gold_trending_up else "DOWN"
-            gld_color = "green" if gold_trending_up else "red"
-            st.metric("Gold ($GLD)", f"${cur['GLD']:.2f}")
-            st.markdown(f":{gld_color}[**TREND: {gld_stat_txt}**]")
+            GLDM_stat_txt = "UP" if gold_trending_up else "DOWN"
+            GLDM_color = "green" if gold_trending_up else "red"
+            st.metric("Gold ($GLDM)", f"${cur['GLDM']:.2f}")
+            st.markdown(f":{GLDM_color}[**TREND: {GLDM_stat_txt}**]")
 
     except Exception as e:
         st.error(f"Data Error: {e}")
