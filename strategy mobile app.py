@@ -33,7 +33,7 @@ STRATEGY_DOCS = """
 
 * **IF SIGNAL IS YELLOW (TRANSITION):** * HOLD current position. Do not buy, do not sell.
 
-* **IF SIGNAL IS RED (DEFENSE ROTATION):** * Check US Dollar (usdu) Trend (vs 63 SMA).  
+* **IF SIGNAL IS RED (DEFENSE ROTATION):** * Check US Dollar (USDU) Trend (vs 63 SMA).  
     * Check Gold (GLDM) Trend (vs 200 SMA).
     * **SCENARIO A (CRASH/DEFLATION):** Stocks RED + Dollar UP (Flight to Safety) -> ACTION: Buy HEDGE BASKET (40% KMLM / 40% BTAL / 20% USDU)  
     * **SCENARIO B (STAGFLATION / DEVALUATION):** Stocks RED + Dollar DOWN + Gold UP -> ACTION: Buy GOLD HEDGE BASKET (40% KMLM / 40% BTAL / 20% GLDM) 
