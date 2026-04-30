@@ -3,377 +3,230 @@ import yfinance as yf
 import pandas as pd
 from datetime import datetime
 import pytz
-import time
 
 # ==============================================================================
 # STRATEGY DETAILS
 # ==============================================================================
 STRATEGY_DOCS = """
-**FREQUENCY:** Execute WEEKLY on Fridays between 3:30 PM and 4:00 PM EST.  
-**EXCEPTION:** DAILY Safety Check (Macro Filter) ONLY between 3:45PM and 4:00PM.
+**FREQUENCY:** Execute DAILY at 3:45 PM EST.
 
-**OBJECTIVE:** Capture aggressive growth in Bull Markets while avoiding major drawdowns using Macro Filters, Asset Rotation, and Momentum Confirmation.
+**OBJECTIVE:** Maximize absolute CAGR utilizing 3X leverage while enforcing a 
+hard mathematical floor against systemic crashes.
 
 **LOGIC TREE:**
 
-**1. SAFETY CHECK (MACRO FILTER) - Evaluated Daily at Close** * **Triggers:** a) Volatility Structure: Spot VIX > 3M VIX (^VIX > ^VIX3M) (Backwardation/Panic)  
-    b) Credit Stress: High Yield (HYG) underperforms Treasuries (IEI) over 20 days.  
-* **RULE:** If EITHER is True -> STATUS = RED (RISK OFF).
+**STEP 1. SAFETY CHECK (MACRO FILTER)**
+* **Triggers:** a) Spot VIX > 3M VIX (^VIX > ^VIX3M)
+  b) HYG underperforms IEI over 20 days.
+* **RULE:** If BOTH a AND b are True -> STATUS = RED (RISK OFF).
 
-**2. TREND CHECK (PRICE & MOMENTUM FILTER)  - Evaluated Weekly at Close** * **Asset Selection:** Track QQQ (Tech) if it outperforms SPY over 63 days, else Track SPY.  
-* **Triggers:** a) GREEN (BUY): Price > 200 SMA AND MACD > Signal Line (Positive Momentum).  
-    b) YELLOW (HOLD): Price > 200 SMA BUT MACD < Signal Line (Weak Momentum/Whipsaw Risk).  
-    c) RED (EXIT): Price < 200 SMA.
+**STEP 2. TREND CHECK (BINARY PRICE FILTER)**
+* **GREEN (RISK ON):** QQQ > 200 SMA -OR- (QQQ > 50 SMA AND MACD > Signal Line).
+* **RED (RISK OFF):** QQQ < 200 SMA AND (QQQ < 50 SMA OR MACD < Signal Line).
 
-**3. ALLOCATION ENGINE (THE "WHAT TO BUY")**
-
-* **IF SIGNAL IS GREEN (RISK ON):** * IF VIX < 20: Buy 3x Leverage (TQQQ or UPRO).  
-    * IF VIX >= 20: Buy 2x Leverage (QLD or SSO).  
-    * SAFETY: Set 35% Trailing Stop Loss (GTC) immediately. (Only for Black Swan events. Do not touch otherwise).
-
-* **IF SIGNAL IS YELLOW (TRANSITION):** * HOLD current position. Do not buy, do not sell.
-
-* **IF SIGNAL IS RED (DEFENSE ROTATION):** * Check US Dollar (USDU) Trend (vs 63 SMA).  
-    * Check Gold (GLDM) Trend (vs 200 SMA).
-    * **SCENARIO A (CRASH/DEFLATION):** Stocks RED + Dollar UP (Flight to Safety) -> ACTION: Buy HEDGE BASKET (40% KMLM / 40% BTAL / 20% USDU)  
-    * **SCENARIO B (STAGFLATION / DEVALUATION):** Stocks RED + Dollar DOWN + Gold UP -> ACTION: Buy GOLD HEDGE BASKET (40% KMLM / 40% BTAL / 20% GLDM) 
-    * **SCENARIO C (TOTAL APATHY / CHOP):** Stocks RED + Dollar DOWN + Gold DOWN -> ACTION: Buy CASH (SGOV)
+**STEP 3. ALLOCATION ENGINE**
+* **IF SIGNAL IS RED (OR MACRO IS RED):**
+  * Scenario A (Strong Dollar): UUP > 63 SMA -> Buy: 40% KMLM / 40% BTAL / 20% USDU
+  * Scenario B (Stagflation): UUP < 63 SMA AND GLD > 200 SMA -> Buy: 40% KMLM / 40% BTAL / 20% GLDM
+  * Scenario C (Deflation): Both below SMAs -> Sell everything, 100% CASH (Schwab Sweep)
+* **IF SIGNAL IS GREEN:**
+  * Monday-Thursday: HOLD current position. Do not buy TQQQ.
+  * Friday: Buy/Hold 100% TQQQ.
 """
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="Roth Strategy", layout="centered")
+st.set_page_config(page_title="Roth IRA Strategy", layout="centered")
 
-ASSETS = {
-    'TECH_3X': 'TQQQ', 'TECH_2X': 'QLD',
-    'SPY_3X':  'UPRO', 'SPY_2X':  'SSO',
-    'HEDGE':   '40% KMLM / 40% BTAL / 20% USDU',
-    'GOLD HEDGE':    '40% KMLM / 40% BTAL / 20% GLDM',
-    'CASH':    '100% SGOV (Treasury Bills)'
-}
+TICKERS = ['QQQ', 'HYG', 'IEI', 'UUP', 'GLD', '^VIX', '^VIX3M']
 
-TICKERS = ['SPY', 'QQQ', 'HYG', 'IEI', 'USDU', 'GLDM', '^VIX', '^VIX3M']
-
-# --- HELPER FUNCTIONS ---
 def get_est_time():
-    """Returns current time in US/Eastern."""
     utc_now = datetime.now(pytz.utc)
     est = pytz.timezone('US/Eastern')
     return utc_now.astimezone(est)
 
+@st.cache_data(ttl=300) # Cache for 5 mins to prevent API spam
 def fetch_data_with_retry(tickers):
-    # Try fetching all at once first (fastest)
     try:
-        # Use auto_adjust=False but grab 'Adj Close' to be safe
         data = yf.download(tickers, period="2y", progress=False, auto_adjust=False)
-        
-        # Check if we got a MultiIndex (common with multiple tickers)
         if isinstance(data.columns, pd.MultiIndex):
-            # STRICT CHECK: We MUST have 'Adj Close'
             if 'Adj Close' in data.columns.levels[0]:
                 data = data['Adj Close']
             else:
-                # If Adjusted Close is missing, we FAIL rather than guessing.
-                raise ValueError("Source data missing 'Adj Close'. Dividend adjustments unavailable.")
+                raise ValueError("Source data missing 'Adj Close'.")
         else:
-            # Single level columns
             if 'Adj Close' in data:
                 data = data['Adj Close']
             else:
-                # Only allow fallback for single tickers if absolutely necessary, 
-                # but better to rely on auto_adjust=True in the loop below if this fails.
-                data = data['Close'] 
+                if 'Close' in data:
+                    data = data['Close']
+                else:
+                    raise ValueError("No valid price data found.")
 
-        # Verify we actually have data
         if data.empty or data.shape[1] < len(tickers):
             raise ValueError("Incomplete data returned")
-            
         return data
 
     except Exception as e:
-        print(f"Bulk download failed: {e}. Retrying individually...")
-        
-        # Fallback: Download one by one and combine (Slower but 99% reliable)
         combined_data = {}
         for t in tickers:
             try:
-                # auto_adjust=True makes 'Close' = Adjusted Close automatically
                 df = yf.download(t, period="2y", progress=False, auto_adjust=True)
                 if not df.empty:
-                    combined_data[t] = df['Close'] # Because auto_adjust=True, 'Close' IS Adjusted
-                else:
-                    print(f"Failed to fetch {t}")
-            except Exception as e2:
-                print(f"Error fetching {t}: {e2}")
-        
+                    combined_data[t] = df['Close']
+            except Exception:
+                pass
         if not combined_data:
             return None
-            
         return pd.DataFrame(combined_data)
 
 # --- MAIN UI ---
-st.title("ROTH STRATEGY: Friday 3:30PM")
+st.title("ROTH IRA STRATEGY")
 st.caption(f"Server Time: {get_est_time().strftime('%Y-%m-%d %I:%M %p EST')}")
 
 with st.expander("📄 Strategy Documentation (Click to Expand)"):
     st.markdown(STRATEGY_DOCS)
 
-# Button to Run
-if st.button("RUN ANALYSIS", type="primary", use_container_width=True):
-    
+if st.button("RUN 3:45 PM ANALYSIS", type="primary", use_container_width=True):
     status_placeholder = st.empty()
     status_placeholder.info("Fetching Market Data...")
 
-    try:
-        # 1. Get Data
-        data = fetch_data_with_retry(TICKERS)
-        
-        # --- DATA INTEGRITY CHECK ---
-        if data is None or data.empty:
-            status_placeholder.empty()
-            st.error("Connection Failed: No data returned from API.")
-            st.stop()
-            
-        # Handle MultiIndex (yfinance update standard)
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.droplevel(0)
-
-        # Check for NaNs in the LAST row specifically (Today's Data)
-        last_row = data.iloc[-1]
-        nan_tickers = last_row[last_row.isna()].index.tolist()
-        
-        if nan_tickers:
-            missing_str = ", ".join(nan_tickers)
-            st.error(f"CRITICAL DATA MISSING (NaN): {missing_str}\n\nMarket data may be delayed or unavailable. Please try again in 15 minutes.")
-            st.stop()
-            # --- HISTORY LENGTH CHECK (Prevent Silent Failures) ---
-        # We need at least 200 days for SMA calculation. 
-        # If QQQ has 100 days, SMA is NaN, creating a FALSE SELL signal.
-        MIN_HISTORY = 205
-        short_history_tickers = []
-        for t in ['SPY', 'QQQ', 'GLDM', 'USDU']:
-            # Count valid non-NaN rows
-            valid_days = data[t].notna().sum()
-            if valid_days < MIN_HISTORY:
-                short_history_tickers.append(f"{t} ({valid_days} days)")
-        
-        if short_history_tickers:
-            missing_str = ", ".join(short_history_tickers)
-            st.error(f"⚠️ INSUFFICIENT DATA HISTORY:\n\n{missing_str}\n\nStrategy requires 205+ days for valid SMA/MACD.\nYahoo Finance returned incomplete data.")
-            st.stop()
-
-        # --- TIMESTAMP VALIDATION ---
-        # 1. Get correct dates
-        last_market_date = data.index[-1].date()
-        est_now = get_est_time()
-        current_est_date = est_now.date()
-
-        # 2. Only check freshness on Weekdays (Mon-Fri)
-        # (weekday 0=Mon, 4=Fri. So < 5 means it is a weekday)
-        if current_est_date.weekday() < 5:
-            if last_market_date != current_est_date:
-                st.error(f"⚠️ DATA IS STALE! \n\nLast Market Date: {last_market_date}\nToday: {current_est_date}\n\nThe API has not returned today's price yet. Please wait.")
-                st.stop()
-
-        # 2. Extract Time Slices
-        cur = data.iloc[-1]       # Today
-        prev_20 = data.iloc[-21]  # 20 Trading Days ago
-        prev_63 = data.iloc[-63]  # 63 Trading Days ago
-
-        # --- CALCULATIONS ---
-
-        # A. Volatility Structure (Panic Check)
-        panic_active = cur['^VIX'] > cur['^VIX3M']
-
-        # B. Credit Stress (HYG vs IEI)
-        hyg_ret = (cur['HYG'] - prev_20['HYG']) / prev_20['HYG']
-        iei_ret = (cur['IEI'] - prev_20['IEI']) / prev_20['IEI']
-        credit_stress = hyg_ret < iei_ret
-
-        # MACRO SAFE SWITCH
-        macro_safe = not (panic_active or credit_stress)
-
-        # C. Trend & Asset Selection
-        tech_perf = (cur['QQQ'] - prev_63['QQQ']) / prev_63['QQQ']
-        spy_perf = (cur['SPY'] - prev_63['SPY']) / prev_63['SPY']
-        tech_leads = tech_perf > spy_perf
-
-        track_ticker = "QQQ" if tech_leads else "SPY"
-        track_price = cur[track_ticker]
-
-        # Moving Average
-        sma_200 = data[track_ticker].rolling(200).mean().iloc[-1]
-
-        # MACD Calculation
-        exp12 = data[track_ticker].ewm(span=12, adjust=False).mean()
-        exp26 = data[track_ticker].ewm(span=26, adjust=False).mean()
-        macd_line = exp12 - exp26
-        signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        macd_bullish = macd_line.iloc[-1] > signal_line.iloc[-1]
-
-        # D. Defensive Trends
-        sma_USDU_63 = data['USDU'].rolling(63).mean().iloc[-1] 
-        sma_gold_200 = data['GLDM'].rolling(200).mean().iloc[-1] 
-        USDU_trending_up = cur['USDU'] > sma_USDU_63
-        gold_trending_up = cur['GLDM'] > sma_gold_200
-
-        # --- LOGIC ENGINE ---
-
-        # 1. Determine Trend Status
-        is_above_sma = track_price > sma_200
-        
-        if is_above_sma and macd_bullish:
-            trend_status = "GREEN"
-        elif not is_above_sma:
-            trend_status = "RED"
-        else:
-            trend_status = "YELLOW"
-
-        # 2. Determine Time Warning Suffix
-        # 0 = Monday, 4 = Friday
-        est_now = get_est_time()
-        today_weekday = est_now.weekday()
-        
-        # Check if it's currently the Daily Macro Execution Time (3:45 PM EST)
-        # We give a window of 3:40 PM - 4:00 PM for the "Execute Now" logic
-        is_daily_close_window = (est_now.hour == 15 and est_now.minute >= 40)
-        
-        time_suffix = ""
-        
-        if not macro_safe:
-            # PRIORITY 1: Macro Fire Alarm (Applies Every Day)
-            if is_daily_close_window:
-                time_suffix = " (⚠️ EXECUTE NOW - MACRO PANIC)"
-            else:
-                time_suffix = " (ONLY Execute if Red at 3:45PM EST)"
-        
-        elif today_weekday != 4:
-            # PRIORITY 2: Not Friday (Wait)
-            time_suffix = " (WAIT FOR FRIDAY)"
-        
-        else:
-            # PRIORITY 3: Friday (Execute)
-            time_suffix = ""
-
-        # 3. Decision Matrix
+    data = fetch_data_with_retry(TICKERS)
+    
+    if data is None or data.empty:
         status_placeholder.empty()
-
-        # --- RED LOGIC (Risk Off) ---
-        if (not macro_safe) or (trend_status == "RED"):
-            # Sub-Logic: Which defense?
-            if USDU_trending_up:
-                asset_name = "HEDGE"
-                asset_desc = ASSETS['HEDGE']
-                why = "Risk Off + Dollar Rising (Deflation Defense)."
-            elif gold_trending_up:
-                asset_name = "GOLD HEDGE"
-                asset_desc = ASSETS['GOLD HEDGE']
-                why = "Risk Off + Dollar Falling + Gold Up (Stagflation Defense)."
-            else:
-                asset_name = "CASH"
-                asset_desc = ASSETS['CASH']
-                why = "Risk Off. No clear trend (Capital Preservation)."
-            
-            st.error(f"### 🔴 RED SIGNAL: {asset_name}{time_suffix}\n\n**BUY:** {asset_desc}\n\n*{why}*\n\nCheck Macro triggers.")
-
-        # --- GREEN LOGIC (Risk On) ---
-        elif trend_status == "GREEN":
-            target_idx = "TECH" if tech_leads else "SPY"
-            vix_spot = cur['^VIX']
-            
-            if vix_spot < 20:
-                ticker = ASSETS[f'{target_idx}_3X']
-                lev = "3x"
-            else:
-                ticker = ASSETS[f'{target_idx}_2X']
-                lev = "2x"
-            
-            msg = f"### 🟢 GREEN SIGNAL: BUY{time_suffix}\n\n**BUY 100% {ticker} ({lev})**\n\n*Price > SMA and MACD Bullish. Set 35% Trailing Stop GTC.*"
-            
-            if "WAIT" in time_suffix:
-                st.success(msg, icon="⏳") # Show as green but with hourglass if waiting
-            else:
-                st.success(msg)
-
-        # --- YELLOW LOGIC (Hold) ---
-        else:
-            st.warning(f"### 🟡 YELLOW SIGNAL: HOLD{time_suffix}\n\n**HOLD CURRENT POSITION**\n\n*Price > SMA but MACD Bearish (Weak Momentum).*")
-
-        # --- DATA GRID ---
-        st.markdown("---")
-        col1, col2, col3 = st.columns(3)
-
-        # Col 1: Safety (VIX & Credit)
-        with col1:
-            st.subheader("1. Macro Safety")
-            
-            # VIX
-            st.metric("VIX (Spot)", f"{cur['^VIX']:.2f}")
-            st.metric("VIX (3M)", f"{cur['^VIX3M']:.2f}")
-            
-            if panic_active:
-                st.markdown(":red[**STATUS: PANIC (Inverted)**]")
-            else:
-                st.markdown(":green[**STATUS: NORMAL**]")
-            
-            st.divider()
-            
-            # Credit
-            st.metric("HYG (Risk)", f"{hyg_ret:.2%}")
-            st.metric("IEI (Safe)", f"{iei_ret:.2%}")
-            
-            if credit_stress:
-                st.markdown(":red[**STATUS: STRESS (Risk Off)**]")
-            else:
-                st.markdown(":green[**STATUS: HEALTHY**]")
-
-        # Col 2: Trend
-        with col2:
-            st.subheader("2. Trend & Mom.")
-            
-            st.metric(f"Asset: {track_ticker}", f"${track_price:.2f}")
-            st.metric("200 SMA", f"${sma_200:.2f}")
-            
-            macd_txt = "MACD UP" if macd_bullish else "MACD DOWN"
-            
-            if trend_status == "GREEN":
-                st.markdown(f":green[**{trend_status} ({macd_txt})**]")
-            elif trend_status == "RED":
-                st.markdown(f":red[**{trend_status} ({macd_txt})**]")
-            else:
-                st.markdown(f":orange[**{trend_status} ({macd_txt})**]")
-
-        # Col 3: Defense
-        with col3:
-            st.subheader("3. Defense Select")
-            
-            # Dollar
-            USDU_stat_txt = "UP" if USDU_trending_up else "DOWN"
-            USDU_color = "green" if USDU_trending_up else "red"
-            st.metric("Dollar ($USDU)", f"${cur['USDU']:.2f}")
-            st.markdown(f":{USDU_color}[**TREND: {USDU_stat_txt}**]")
-            
-            st.divider()
-            
-            # Gold
-            GLDM_stat_txt = "UP" if gold_trending_up else "DOWN"
-            GLDM_color = "green" if gold_trending_up else "red"
-            st.metric("Gold ($GLDM)", f"${cur['GLDM']:.2f}")
-            st.markdown(f":{GLDM_color}[**TREND: {GLDM_stat_txt}**]")
-
-    except Exception as e:
-        st.error(f"Data Error: {e}")
+        st.error("Connection Failed: No data returned from API.")
+        st.stop()
         
-# --- LEGEND ---
-st.markdown("---")
-st.subheader("Strategy Rules & Legend")
-st.info("EXECUTION: Fridays 3:30PM - 4:00PM EST. EXCEPT for Daily Macro 3:45PM - 4:00PM")
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.droplevel(0)
 
-with st.expander("Show Detailed Legend", expanded=True):
-    st.markdown("""
-    * **DAILY CHECK (3:45 PM):** :red[**RED**] (Macro Unsafe) = VIX Inverted OR Credit Stress (Exit Immediately).
-    * **FRIDAY CHECK (3:30 PM):**
-        * :green[**GREEN**] = Price > SMA + MACD Bullish (Positive Momentum).
-        * :orange[**YELLOW**] = Price > SMA but MACD Bearish (Weak Trend). Hold Position.
-        * :red[**RED (HEDGE)**] = Price < SMA (Check Defense: Hedge -> Gold Hedge -> Cash).
-    * :red[**SAFETY**]: Always maintain 35% Trailing Stop GTC for Black Swans.
-    """)
+    data = data.ffill()
+
+    last_row = data.iloc[-1]
+    nan_tickers = last_row[last_row.isna()].index.tolist()
+    if nan_tickers:
+        st.error(f"CRITICAL DATA MISSING (NaN): {', '.join(nan_tickers)}\n\nTry again in 15 minutes.")
+        st.stop()
+
+    MIN_HISTORY = 205
+    for t in ['QQQ', 'GLD']:
+        if data[t].notna().sum() < MIN_HISTORY:
+            st.error(f"⚠️ INSUFFICIENT DATA: {t} requires 205+ days.")
+            st.stop()
+
+    cur = data.iloc[-1]
+    prev_20 = data.iloc[-21]
+
+    est_now = get_est_time()
+    today_weekday = est_now.weekday()
+
+    # STEP 1: MACRO FILTER
+    vix_panic = cur['^VIX'] > cur['^VIX3M']
+    hyg_ret = (cur['HYG'] - prev_20['HYG']) / prev_20['HYG']
+    iei_ret = (cur['IEI'] - prev_20['IEI']) / prev_20['IEI']
+    credit_stress = hyg_ret < iei_ret
+    
+    macro_red = vix_panic and credit_stress
+
+    # STEP 2: TREND FILTER (QQQ)
+    q_price = cur['QQQ']
+    sma_200 = data['QQQ'].rolling(200).mean().iloc[-1]
+    sma_50 = data['QQQ'].rolling(50).mean().iloc[-1]
+    
+    exp12 = data['QQQ'].ewm(span=12, adjust=False).mean()
+    exp26 = data['QQQ'].ewm(span=26, adjust=False).mean()
+    macd = exp12 - exp26
+    sig = macd.ewm(span=9, adjust=False).mean()
+    macd_bullish = macd.iloc[-1] > sig.iloc[-1]
+
+    green_cond = (q_price > sma_200) or ((q_price > sma_50) and macd_bullish)
+    red_cond = (q_price < sma_200) and ((q_price < sma_50) or not macd_bullish)
+
+    if macro_red:
+        trend_status = "RED"
+    elif red_cond and not green_cond:
+        trend_status = "RED"
+    else:
+        trend_status = "GREEN"
+
+    # STEP 3: ALLOCATION ENGINE
+    sma_uup_63 = data['UUP'].rolling(63).mean().iloc[-1]
+    sma_gld_200 = data['GLD'].rolling(200).mean().iloc[-1]
+    
+    uup_up = cur['UUP'] > sma_uup_63
+    gld_up = cur['GLD'] > sma_gld_200
+
+    status_placeholder.empty()
+
+    if trend_status == "RED":
+        if uup_up:
+            st.error("### 🔴 RED SIGNAL: HEDGE A\n\n**BUY: 40% KMLM / 40% BTAL / 20% USDU**\n\n*Scenario A (Cash Crunch / Strong Dollar)*")
+        elif not uup_up and gld_up:
+            st.warning("### 🔴 RED SIGNAL: HEDGE B\n\n**BUY: 40% KMLM / 40% BTAL / 20% GLDM**\n\n*Scenario B (Stagflation / Weak Dollar)*")
+        else:
+            st.error("### 🔴 RED SIGNAL: CASH\n\n**SELL EVERYTHING -> 100% CASH (Schwab Sweep)**\n\n*Scenario C (Deflationary Cash)*")
+    else:
+        if today_weekday == 4:
+            st.success("### 🟢 GREEN SIGNAL: RISK ON\n\n**BUY/HOLD 100% TQQQ**\n\n*Trend is GREEN. Today is Friday (Execution Day).*")
+        else:
+            st.success("### 🟢 GREEN SIGNAL: HOLD (Waiting for Friday)\n\n**HOLD CURRENT POSITION**\n\n*Trend is GREEN, but today is not Friday. Do not buy TQQQ.*", icon="⏳")
+
+    # --- DATA GRID ---
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.subheader("1. Macro (Step 1)")
+        st.metric("VIX (Spot)", f"{cur['^VIX']:.2f}")
+        st.metric("VIX (3M)", f"{cur['^VIX3M']:.2f}")
+        if vix_panic:
+            st.markdown(":red[**VIX: PANIC**]")
+        else:
+            st.markdown(":green[**VIX: NORMAL**]")
+        
+        st.divider()
+        st.metric("HYG (Risk)", f"{hyg_ret:.2%}")
+        st.metric("IEI (Safe)", f"{iei_ret:.2%}")
+        if credit_stress:
+            st.markdown(":red[**CREDIT: STRESS**]")
+        else:
+            st.markdown(":green[**CREDIT: HEALTHY**]")
+
+        st.divider()
+        if macro_red:
+            st.markdown(":red[**MACRO: FAIL (RED)**]")
+        else:
+            st.markdown(":green[**MACRO: PASS (GREEN)**]")
+
+    with col2:
+        st.subheader("2. Trend (Step 2)")
+        st.metric("QQQ Price", f"${q_price:.2f}")
+        st.metric("200 SMA", f"${sma_200:.2f}")
+        st.metric("50 SMA", f"${sma_50:.2f}")
+        if macd_bullish:
+            st.markdown(":green[**MACD: BULLISH**]")
+        else:
+            st.markdown(":red[**MACD: BEARISH**]")
+
+    with col3:
+        st.subheader("3. Defense Select")
+        uup_stat = "UP (> 63 SMA)" if uup_up else "DOWN"
+        uup_col = "green" if uup_up else "red"
+        st.metric("Dollar (UUP)", f"${cur['UUP']:.2f}")
+        st.markdown(f":{uup_col}[**TREND: {uup_stat}**]")
+        
+        st.divider()
+        
+        gld_stat = "UP (> 200 SMA)" if gld_up else "DOWN"
+        gld_col = "green" if gld_up else "red"
+        st.metric("Gold (GLD)", f"${cur['GLD']:.2f}")
+        st.markdown(f":{gld_col}[**TREND: {gld_stat}**]")
+
+st.markdown("---")
+st.subheader("Execution Rules")
+st.info("EXECUTION: DAILY @ 3:45 PM EST")
+st.markdown("""
+* **MACRO:** Requires BOTH VIX Inversion AND Credit Stress to trigger RED.
+* **TREND:** QQQ requires dual-confirmation (Moving Averages + MACD) to exit.
+* **OFFENSE:** If GREEN, hold current positions Mon-Thu. BUY TQQQ on Fridays ONLY.
+* **DEFENSE:** If RED, instantly rotate to specified Hedge Scenario or Cash.
+""")
