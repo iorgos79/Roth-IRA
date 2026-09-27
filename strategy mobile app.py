@@ -30,8 +30,7 @@ hard mathematical floor against systemic crashes.
   * Scenario B (Stagflation): UUP < 63 SMA AND GLD > 200 SMA -> Buy: 40% KMLM / 40% BTAL / 20% GLDM
   * Scenario C (Deflation): Both below SMAs -> Sell everything, 100% CASH (Schwab Sweep)
 * **IF SIGNAL IS GREEN:**
-  * Monday-Thursday: HOLD current position. Do not buy TQQQ.
-  * Friday: Buy/Hold 100% TQQQ.
+  * Buy/Hold 100% TQQQ.
 """
 
 st.set_page_config(page_title="Roth IRA Strategy", layout="centered")
@@ -165,10 +164,7 @@ if st.button("RUN 3:45 PM ANALYSIS", type="primary", use_container_width=True):
         else:
             st.error("### 🔴 RED SIGNAL: CASH\n\n**SELL EVERYTHING -> 100% CASH (Schwab Sweep)**\n\n*Scenario C (Deflationary Cash)*")
     else:
-        if today_weekday == 4:
-            st.success("### 🟢 GREEN SIGNAL: RISK ON\n\n**BUY/HOLD 100% TQQQ**\n\n*Trend is GREEN. Today is Friday (Execution Day).*")
-        else:
-            st.success("### 🟢 GREEN SIGNAL: HOLD (Waiting for Friday)\n\n**HOLD CURRENT POSITION**\n\n*Trend is GREEN, but today is not Friday. Do not buy TQQQ.*", icon="⏳")
+            st.success("### 🟢 GREEN SIGNAL: RISK ON\n\n**BUY/HOLD 100% TQQQ**\n\n*Trend is GREEN*")
 
     # --- DATA GRID ---
     st.markdown("---")
@@ -227,6 +223,6 @@ st.info("EXECUTION: DAILY @ 3:45 PM EST")
 st.markdown("""
 * **MACRO:** Requires BOTH VIX Inversion AND Credit Stress to trigger RED.
 * **TREND:** QQQ requires dual-confirmation (Moving Averages + MACD) to exit.
-* **OFFENSE:** If GREEN, hold current positions Mon-Thu. BUY TQQQ on Fridays ONLY.
+* **OFFENSE:** If GREEN, BUY/HOLD TQQQ.
 * **DEFENSE:** If RED, instantly rotate to specified Hedge Scenario or Cash.
 """)
