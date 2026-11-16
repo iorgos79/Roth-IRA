@@ -109,7 +109,7 @@ def fetch_data_with_retry(tickers):
 st.title("ROTH IRA — (70/30 TQQQ / SCHD / SGOV)")
 st.caption(f"Server Time (EST): {get_est_time().strftime('%Y-%m-%d %I:%M:%S %p')} | Evaluated daily at 3:45 PM ET via Dividend-Adjusted Prices")
 
-with st.expander("📄 View Official Locked Strategy Documentation (FROZEN SPEC v1)"):
+with st.expander("📄 View Official Locked Strategy Documentation "):
     st.markdown(STRATEGY_DOCS)
 
 # ==============================================================================
