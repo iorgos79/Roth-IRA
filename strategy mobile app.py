@@ -6,10 +6,10 @@ from datetime import datetime
 import pytz
 
 # ==============================================================================
-# STRATEGY DOCUMENTATION — FROZEN SPEC v1 (OFFICIAL LOCKED SPECIFICATION)
+# STRATEGY DOCUMENTATION — ROTH IRA — (70/30 TQQQ / SCHD / SGOV) (OFFICIAL LOCKED SPECIFICATION)
 # ==============================================================================
 STRATEGY_DOCS = """
-**FROZEN SPEC v1: TQQQ / SCHD / SGOV, 70/30 core-satellite (Roth IRA)**
+**TQQQ / SCHD / SGOV, 70/30 core-satellite (Roth IRA)**
 Check daily at 3:45 PM ET using DIVIDEND ADJUSTED (Adj Close in yfinance) prices.
 
 1. **MACRO BREAKER**
