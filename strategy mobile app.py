@@ -355,7 +355,8 @@ with col1:
         st.markdown(f":red[**MACRO BREAKER: {macro_txt}**]")
     else:
         st.markdown(":green[**MACRO BREAKER: OFF (CLEAR)**]")
-
+    st.divider()
+   
 with col2:
     st.subheader("2. Trend Gate (Rule 2)")
     st.metric("QQQ (Adj Close)", f"${q_price:.2f}")
@@ -368,7 +369,8 @@ with col2:
         st.markdown(f":green[**GATE ON (+{pct_above_exit:.2f}% vs 0.98 Exit)**]")
     else:
         st.markdown(f":red[**GATE OFF (Closes > SMA200: {above_count}/2)**]")
-
+    st.divider()
+   
 with col3:
     st.subheader("3. Vol Latch & Sleeve (Rules 3-6)")
     st.metric("QQQ 20d Sample Vol", f"{vol_20*100:.2f}%")
