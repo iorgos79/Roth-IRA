@@ -106,7 +106,7 @@ def fetch_data_with_retry(tickers):
 # ==============================================================================
 # UI HEADER & DOCUMENTATION EXPANDER
 # ==============================================================================
-st.title("🛡️ ROTH IRA — FROZEN SPEC v1 (70/30 TQQQ / SCHD / SGOV)")
+st.title("ROTH IRA — (70/30 TQQQ / SCHD / SGOV)")
 st.caption(f"Server Time (EST): {get_est_time().strftime('%Y-%m-%d %I:%M:%S %p')} | Evaluated daily at 3:45 PM ET via Dividend-Adjusted Prices")
 
 with st.expander("📄 View Official Locked Strategy Documentation (FROZEN SPEC v1)"):
@@ -465,7 +465,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style="background-color: #f8f8f8; padding: 12px; border-radius: 5px; border: 1px solid #dcdcdc;">
-        <p style="font-weight: bold; color: #111111; margin-bottom: 4px;">LOCKED EXECUTION RULES — FROZEN SPEC v1 (CHECK DAILY @ 3:45 PM ET, DIVIDEND-ADJUSTED PRICES)</p>
+        <p style="font-weight: bold; color: #111111; margin-bottom: 4px;">LOCKED EXECUTION RULES — ROTH IRA 70/30 TQQQ/SCHD/SGOV (CHECK DAILY @ 3:45 PM ET, DIVIDEND-ADJUSTED PRICES)</p>
         <ul style="font-size: 12px; color: #333333; margin-bottom: 0; padding-left: 20px;">
             <li><b>1. MACRO BREAKER:</b> Raw = (VIX > VIX3M) AND (HYG 20d ret < IEI 20d ret). Turns ON day it fires; turns OFF after 2 consecutive false days.</li>
             <li><b>2. TREND GATE:</b> Exit only if QQQ close < 0.98 x SMA200. Re-enter after 2 consecutive closes above SMA200.</li>
