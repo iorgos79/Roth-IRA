@@ -43,7 +43,7 @@ Check daily at 3:45 PM ET using DIVIDEND ADJUSTED (Adj Close in yfinance) prices
 TICKERS = ['QQQ', 'TQQQ', 'SCHD', 'SGOV', 'HYG', 'IEI', '^VIX', '^VIX3M']
 
 st.set_page_config(
-    page_title="ROTH IRA — FROZEN SPEC v1 (70/30 TQQQ / SCHD / SGOV)",
+    page_title="ROTH IRA (70/30 TQQQ / SCHD / SGOV)",
     layout="wide"
 )
 
