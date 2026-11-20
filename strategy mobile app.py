@@ -47,25 +47,19 @@ Check daily at 3:45 PM ET using DIVIDEND-ADJUSTED (`Adj Close` in yfinance) pric
 4. Otherwise → Hold **100% `TQQQ` (GREEN)**.
 """
 
-TICKERS = ['QQQ', 'TQQQ', 'SCHD', 'HYG', 'IEI', '^VIX', '^VIX3M']
-PERF_TICKERS = ['TQQQ', 'QQQ', 'SCHD']
+TICKERS = ['QQQ', 'HYG', 'IEI', '^VIX', '^VIX3M']
 
 st.set_page_config(
     page_title="Roth IRA",
     layout="centered"
 )
 
-# Mobile-friendly compact CSS (safe in both Light & Dark Mode)
+# Mobile-friendly compact CSS
 st.markdown(
     """
     <style>
     .block-container { padding-top: 1.2rem; padding-bottom: 1.5rem; max-width: 820px; }
     [data-testid="stMetricValue"] { font-size: 1.4rem; }
-    .perf-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 4px; color: #111111; }
-    .perf-table th, .perf-table td { padding: 8px 6px; border-bottom: 1px solid #e5e5e5; }
-    .perf-table th { text-align: right; color: #555555; font-weight: 600; font-size: 12px; }
-    .perf-table th:first-child, .perf-table td:first-child { text-align: left; font-weight: 700; color: #111111; }
-    .perf-table td { text-align: right; color: #111111; font-variant-numeric: tabular-nums; }
     </style>
     """,
     unsafe_allow_html=True
@@ -76,26 +70,26 @@ def get_et_time():
     return datetime.now(ET_TZ)
 
 
-def extract_series(df, col_pref=('Adj Close', 'Close'), ticker=None):
-    """Safely extracts a numeric Series from single- or multi-index yfinance DataFrames."""
+def extract_adj_series(df, ticker=None):
+    """Safely extracts dividend-adjusted Close (Adj Close) with fallback to Close."""
     if df is None or df.empty:
         return None
     if isinstance(df.columns, pd.MultiIndex):
         lvl0 = df.columns.get_level_values(0)
-        chosen = next((c for c in col_pref if c in lvl0), None)
-        if chosen is None:
+        col = 'Adj Close' if 'Adj Close' in lvl0 else ('Close' if 'Close' in lvl0 else None)
+        if col is None:
             return None
-        sub = df[chosen]
+        sub = df[col]
         if ticker is not None and isinstance(sub, pd.DataFrame) and ticker in sub.columns:
             return pd.to_numeric(sub[ticker], errors='coerce')
         return pd.to_numeric(sub.squeeze(), errors='coerce')
-    chosen = next((c for c in col_pref if c in df.columns), None)
-    return pd.to_numeric(df[chosen], errors='coerce') if chosen else None
+    col = 'Adj Close' if 'Adj Close' in df.columns else ('Close' if 'Close' in df.columns else None)
+    return pd.to_numeric(df[col], errors='coerce') if col else None
 
 
 @st.cache_data(ttl=300)
 def fetch_data_with_retry(tickers):
-    """Fetches 5y daily bars: Adj Close for signals/total returns, raw Close for live quotes."""
+    """Fetches 5y daily dividend-adjusted prices (Adj Close) for signal calculation."""
     try:
         raw = yf.download(tickers, period="5y", progress=False, auto_adjust=False)
         if raw is None or raw.empty or not isinstance(raw.columns, pd.MultiIndex):
@@ -103,67 +97,36 @@ def fetch_data_with_retry(tickers):
 
         lvl0 = raw.columns.get_level_values(0)
         if 'Adj Close' in lvl0:
-            adj_df = raw['Adj Close'].copy()
+            data = raw['Adj Close'].copy()
             if 'Close' in lvl0:
-                adj_df = adj_df.combine_first(raw['Close'])
+                data = data.combine_first(raw['Close'])
         elif 'Close' in lvl0:
-            adj_df = raw['Close'].copy()
+            data = raw['Close'].copy()
         else:
             raise ValueError("Source data missing 'Adj Close' and 'Close'.")
 
-        close_df = raw['Close'].copy() if 'Close' in lvl0 else adj_df.copy()
-
-        missing = [t for t in tickers if t not in adj_df.columns]
-        if adj_df.empty or missing:
+        missing = [t for t in tickers if t not in data.columns]
+        if data.empty or missing:
             raise ValueError(f"Missing ticker columns: {missing}")
 
-        adj_df.index = pd.to_datetime(adj_df.index).tz_localize(None)
-        close_df.index = pd.to_datetime(close_df.index).tz_localize(None)
-        return (
-            adj_df[tickers].apply(pd.to_numeric, errors='coerce'),
-            close_df[tickers].apply(pd.to_numeric, errors='coerce'),
-        )
+        data.index = pd.to_datetime(data.index).tz_localize(None)
+        return data[tickers].apply(pd.to_numeric, errors='coerce')
 
     except Exception:
-        adj_map, close_map = {}, {}
+        combined = {}
         for t in tickers:
             try:
                 df = yf.download(t, period="5y", progress=False, auto_adjust=False)
-                s_adj = extract_series(df, ('Adj Close', 'Close'), ticker=t)
-                s_cls = extract_series(df, ('Close', 'Adj Close'), ticker=t)
-                if isinstance(s_adj, pd.Series) and not s_adj.empty:
-                    s_adj.index = pd.to_datetime(s_adj.index).tz_localize(None)
-                    s_cls.index = pd.to_datetime(s_cls.index).tz_localize(None)
-                    adj_map[t] = s_adj
-                    close_map[t] = s_cls
+                s = extract_adj_series(df, ticker=t)
+                if isinstance(s, pd.Series) and not s.empty:
+                    s.index = pd.to_datetime(s.index).tz_localize(None)
+                    combined[t] = s
             except Exception:
                 pass
 
-        if len(adj_map) < len(tickers):
-            return None, None
-        return pd.DataFrame(adj_map)[tickers], pd.DataFrame(close_map)[tickers]
-
-
-def compute_perf_snapshot(adj_df, close_df, tickers=PERF_TICKERS):
-    """Computes live price plus 5-day (1W), monthly (21d), and yearly (252d) total returns."""
-    perf = {}
-    for t in tickers:
-        s_adj = adj_df[t].dropna()
-        s_cls = close_df[t].dropna()
-        price = float(s_cls.iloc[-1]) if not s_cls.empty else float(s_adj.iloc[-1])
-
-        def pct_over(days):
-            if len(s_adj) > days and float(s_adj.iloc[-(days + 1)]) > 0:
-                return (float(s_adj.iloc[-1]) / float(s_adj.iloc[-(days + 1)])) - 1.0
+        if len(combined) < len(tickers):
             return None
-
-        perf[t] = {
-            'price': price,
-            'ret_5d': pct_over(5),
-            'ret_1m': pct_over(21),
-            'ret_1y': pct_over(252),
-        }
-    return perf
+        return pd.DataFrame(combined)[tickers]
 
 
 def compute_strategy_state(data):
@@ -268,13 +231,6 @@ def compute_strategy_state(data):
     }
 
 
-def fmt_pct_html(val):
-    if val is None:
-        return '<span style="color:#666666;">N/A</span>'
-    color = "#007a00" if val >= 0 else "#cc0000"
-    return f'<span style="color:{color}; font-weight:600;">{val*100:+.2f}%</span>'
-
-
 # ==============================================================================
 # UI HEADER, REFRESH BUTTON & DOCUMENTATION EXPANDER
 # ==============================================================================
@@ -296,14 +252,13 @@ with st.expander("📄 View Official Locked Strategy Documentation"):
 # MAIN BACKEND & SIMULATION ENGINE
 # ==============================================================================
 with st.spinner("Fetching Market Data and Running Strategy Engine..."):
-    data, raw_close = fetch_data_with_retry(TICKERS)
+    data = fetch_data_with_retry(TICKERS)
 
 if data is None or data.empty:
     st.error("Connection Failed: No data returned from Yahoo Finance.")
     st.stop()
 
 data = data.sort_index().ffill().dropna(subset=TICKERS)
-raw_close = raw_close.sort_index().ffill().reindex(data.index)
 
 if data.empty or len(data) < 205:
     st.error("Insufficient history: Need 205+ aligned trading days.")
@@ -316,7 +271,6 @@ if nan_tickers:
     st.stop()
 
 s = compute_strategy_state(data)
-perf = compute_perf_snapshot(data, raw_close, PERF_TICKERS)
 
 cur = data.iloc[-1]
 last_bar_date = data.index[-1].strftime('%Y-%m-%d')
@@ -375,7 +329,7 @@ else:
 # 1. TOP SIGNAL BANNER
 st.markdown(
     f"""
-    <div style="background-color: {box_color}; padding: 16px; border-radius: 8px; border: 2px solid #333333; margin-bottom: 16px;">
+    <div style="background-color: {box_color}; padding: 16px; border-radius: 8px; border: 2px solid #333333; margin-bottom: 18px;">
         <h2 style="color: #111111; margin-top: 0; margin-bottom: 6px; font-size: 20px; line-height: 1.25;">{title}</h2>
         <p style="color: #111111; font-weight: bold; font-size: 15px; margin-bottom: 6px;">{alloc}</p>
         <p style="color: #222222; font-size: 13px; margin-bottom: 0;">{reason}</p>
@@ -384,44 +338,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 2. ETF PRICES & PERFORMANCE BOX (TQQQ, QQQ, SCHD)
-rows_html = ""
-for t in PERF_TICKERS:
-    p = perf[t]
-    rows_html += (
-        f"<tr>"
-        f"<td>{t}</td>"
-        f"<td><b>${p['price']:.2f}</b></td>"
-        f"<td>{fmt_pct_html(p['ret_5d'])}</td>"
-        f"<td>{fmt_pct_html(p['ret_1m'])}</td>"
-        f"<td>{fmt_pct_html(p['ret_1y'])}</td>"
-        f"</tr>"
-    )
-
-st.markdown(
-    f"""
-    <div style="background-color: #ffffff; padding: 14px; border-radius: 8px; border: 1px solid #dcdcdc; margin-bottom: 18px;">
-        <div style="font-weight: 700; color: #111111; font-size: 14px; margin-bottom: 6px;">
-            ETF Prices &amp; Performance (Adj. Gain / Loss)
-        </div>
-        <table class="perf-table">
-            <thead>
-                <tr>
-                    <th>Ticker</th>
-                    <th>Price</th>
-                    <th>5D (1W)</th>
-                    <th>1M (21d)</th>
-                    <th>1Y (252d)</th>
-                </tr>
-            </thead>
-            <tbody>{rows_html}</tbody>
-        </table>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-# 3. THREE-COLUMN RULES GRID (STACKS CLEANLY ON MOBILE)
+# 2. THREE-COLUMN RULES GRID (STACKS CLEANLY ON MOBILE)
 col1, col2, col3 = st.columns(3)
 
 with col1:
