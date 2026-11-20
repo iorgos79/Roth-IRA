@@ -3,132 +3,310 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import pytz
+
+try:
+    from zoneinfo import ZoneInfo
+    ET_TZ = ZoneInfo("America/New_York")
+except Exception:
+    import pytz
+    ET_TZ = pytz.timezone("America/New_York")
 
 # ==============================================================================
-# STRATEGY DOCUMENTATION — ROTH IRA — (70/30 TQQQ / SCHD / SGOV) (OFFICIAL LOCKED SPECIFICATION)
+# STRATEGY DOCUMENTATION — ROTH IRA (Strategy Ss + 1.2x SCHD)
 # ==============================================================================
 STRATEGY_DOCS = """
-**TQQQ / SCHD / SGOV, 70/30 core-satellite (Roth IRA)**
-Check daily at 3:45 PM ET using DIVIDEND ADJUSTED (Adj Close in yfinance) prices.
+**Strategy Ss + 1.2x SCHD (Roth IRA — Single-Asset 100% States)**
+Check daily at 3:45 PM ET using DIVIDEND-ADJUSTED (`Adj Close` in yfinance) prices.
 
+- **GREEN STATE:** 100% `TQQQ` (or `UPRO` if running S&P 500).
+- **ORANGE STATE:** 100% `SCHD` (High-Volatility Regime).
+- **EXTENDED / OVERBOUGHT STATE:** 100% `SCHD` (Temporary step-down when `QQQ > 1.20 * SMA200`; stays in `SCHD` until `QQQ < 1.17 * SMA200`).
+- **RED STATE:** 100% `SGOV` (or `BIL` / Treasury Money Market).
+
+**Signal Parameters (Evaluated at 3:45 PM ET Daily):**
 1. **MACRO BREAKER**
-   Raw trigger = (VIX > VIX3M) AND (HYG 20-day return < IEI 20-day return).
-   Turns ON the day it fires. Turns OFF after 2 consecutive days with the trigger false.
+   Raw trigger = (`^VIX > ^VIX3M`) AND (20-day return of `HYG < IEI`).
+   Exit to **RED (`100% SGOV`)** immediately. Latch for **2 consecutive clear days** before releasing.
 
-2. **TREND GATE (QQQ vs its 200-day SMA)**
-   Exit only if QQQ close < 0.98 x SMA200.
-   Re-enter after 2 consecutive closes above SMA200.
+2. **TREND GATE (`QQQ` vs. 200-day dividend-adjusted SMA)**
+   Exit to **RED (`100% SGOV`)** if `QQQ < 0.98 * SMA200`.
+   Re-enter only after **2 consecutive closes above `SMA200`**.
 
 3. **VOLATILITY LATCH**
-   vol20 = 20-day sample std of QQQ daily returns x sqrt(252), tracked every day.
-   ON when vol20 > 26%. OFF only when vol20 < 21%.
+   `vol20` = 20-day annualized realized volatility of `QQQ` (sample std × √252), tracked daily.
+   Shift to **ORANGE (`100% SCHD`)** if `vol20 > 26.0%`. Stay in `SCHD` until `vol20 < 21.0%`.
 
-4. **SLEEVE** (the strategy part of the account holds ONE asset at a time)
-   Macro ON or trend gate off -> 100% SGOV
-   Else latch ON             -> 100% SCHD
-   Else                      -> 100% TQQQ
+4. **OVEREXTENSION STEP-DOWN (`1.20x / 1.17x`)**
+   Evaluated on `QQQ` close relative to its 200-day dividend-adjusted SMA.
+   Step to **EXTENDED (`100% SCHD`)** if `QQQ > 1.20 * SMA200`. Stay in `SCHD` until `QQQ < 1.17 * SMA200` before returning to GREEN.
 
-5. **CORE:** 30% of the account in SCHD, permanently.
-
-6. **REBALANCE & DRIFT MANAGEMENT (State-Switch Reset + 80% Upper Cap)**
-   - **State-Switch Reset:** Whenever the sleeve switches into TQQQ (from SCHD or SGOV) or into SGOV (from TQQQ or SCHD), allocate exactly 70.0% of total account value to the new sleeve asset (TQQQ or SGOV) and set SCHD to 30.0% of total account value.
-   - **Upper Guardrail:** While holding TQQQ, if strong momentum pushes TQQQ to >= 80.0% of the total account at the 3:45 PM check, trim TQQQ back to 70.0% and add the proceeds to SCHD.
-   - **Downside / Full SCHD:** No lower-band rebalancing needed (the volatility latch and trend gate exit TQQQ before 60% can be reached). While the sleeve holds SCHD (account is 100% SCHD), no rebalance trade is made.
-   - **Cash Flows:** Set dividends to Pay-to-Cash (DRIP OFF); route cash distributions and new contributions to whichever asset is underweight relative to the active target state.
-
-7. **FREEZE:** No parameter or rule changes for 12 months.
+**Decision Hierarchy:**
+1. If Macro Breaker is ON **OR** Trend Gate is OFF → Hold **100% `SGOV` (RED)**.
+2. Otherwise, if Volatility Latch is ON (`>26% / <21%`) → Hold **100% `SCHD` (ORANGE)**.
+3. Otherwise, if Overextension Step-Down is ON (`>1.20x / <1.17x`) → Hold **100% `SCHD` (EXTENDED)**.
+4. Otherwise → Hold **100% `TQQQ` (GREEN)**.
 """
 
-TICKERS = ['QQQ', 'TQQQ', 'SCHD', 'SGOV', 'HYG', 'IEI', '^VIX', '^VIX3M']
+TICKERS = ['QQQ', 'TQQQ', 'SCHD', 'HYG', 'IEI', '^VIX', '^VIX3M']
+PERF_TICKERS = ['TQQQ', 'QQQ', 'SCHD']
 
 st.set_page_config(
-    page_title="ROTH IRA (70/30 TQQQ / SCHD / SGOV)",
-    layout="wide"
+    page_title="Roth IRA",
+    layout="centered"
 )
 
-def get_est_time():
-    utc_now = datetime.now(pytz.utc)
-    est = pytz.timezone('US/Eastern')
-    return utc_now.astimezone(est)
+# Mobile-friendly compact CSS (safe in both Light & Dark Mode)
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 1.2rem; padding-bottom: 1.5rem; max-width: 820px; }
+    [data-testid="stMetricValue"] { font-size: 1.4rem; }
+    .perf-table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 4px; color: #111111; }
+    .perf-table th, .perf-table td { padding: 8px 6px; border-bottom: 1px solid #e5e5e5; }
+    .perf-table th { text-align: right; color: #555555; font-weight: 600; font-size: 12px; }
+    .perf-table th:first-child, .perf-table td:first-child { text-align: left; font-weight: 700; color: #111111; }
+    .perf-table td { text-align: right; color: #111111; font-variant-numeric: tabular-nums; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+def get_et_time():
+    return datetime.now(ET_TZ)
+
+
+def extract_series(df, col_pref=('Adj Close', 'Close'), ticker=None):
+    """Safely extracts a numeric Series from single- or multi-index yfinance DataFrames."""
+    if df is None or df.empty:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        lvl0 = df.columns.get_level_values(0)
+        chosen = next((c for c in col_pref if c in lvl0), None)
+        if chosen is None:
+            return None
+        sub = df[chosen]
+        if ticker is not None and isinstance(sub, pd.DataFrame) and ticker in sub.columns:
+            return pd.to_numeric(sub[ticker], errors='coerce')
+        return pd.to_numeric(sub.squeeze(), errors='coerce')
+    chosen = next((c for c in col_pref if c in df.columns), None)
+    return pd.to_numeric(df[chosen], errors='coerce') if chosen else None
+
 
 @st.cache_data(ttl=300)
 def fetch_data_with_retry(tickers):
-    """Fetches 5y daily bars, strictly enforcing Adjusted Close (Adj Close) for signals."""
+    """Fetches 5y daily bars: Adj Close for signals/total returns, raw Close for live quotes."""
     try:
-        data = yf.download(tickers, period="5y", progress=False, auto_adjust=False)
+        raw = yf.download(tickers, period="5y", progress=False, auto_adjust=False)
+        if raw is None or raw.empty or not isinstance(raw.columns, pd.MultiIndex):
+            raise ValueError("Empty or unexpected bulk download response.")
 
-        if isinstance(data.columns, pd.MultiIndex):
-            lvl0 = data.columns.get_level_values(0)
-            if 'Adj Close' in lvl0:
-                data = data['Adj Close'].copy()
-            elif 'Close' in lvl0:
-                data = data['Close'].copy()
-            else:
-                raise ValueError("Source data missing 'Adj Close' and 'Close'.")
+        lvl0 = raw.columns.get_level_values(0)
+        if 'Adj Close' in lvl0:
+            adj_df = raw['Adj Close'].copy()
+            if 'Close' in lvl0:
+                adj_df = adj_df.combine_first(raw['Close'])
+        elif 'Close' in lvl0:
+            adj_df = raw['Close'].copy()
         else:
-            if 'Adj Close' in data.columns:
-                data = data['Adj Close'].copy()
-            elif 'Close' in data.columns:
-                data = data['Close'].copy()
-            else:
-                raise ValueError("No valid price columns found.")
+            raise ValueError("Source data missing 'Adj Close' and 'Close'.")
 
-        missing = [t for t in tickers if t not in data.columns]
-        if data.empty or missing:
-            raise ValueError(f"Missing ticker columns from bulk download: {missing}")
+        close_df = raw['Close'].copy() if 'Close' in lvl0 else adj_df.copy()
 
-        return data[tickers]
+        missing = [t for t in tickers if t not in adj_df.columns]
+        if adj_df.empty or missing:
+            raise ValueError(f"Missing ticker columns: {missing}")
 
-    except Exception as e:
-        combined_data = {}
+        adj_df.index = pd.to_datetime(adj_df.index).tz_localize(None)
+        close_df.index = pd.to_datetime(close_df.index).tz_localize(None)
+        return (
+            adj_df[tickers].apply(pd.to_numeric, errors='coerce'),
+            close_df[tickers].apply(pd.to_numeric, errors='coerce'),
+        )
+
+    except Exception:
+        adj_map, close_map = {}, {}
         for t in tickers:
             try:
                 df = yf.download(t, period="5y", progress=False, auto_adjust=False)
-                if df is not None and not df.empty:
-                    if isinstance(df.columns, pd.MultiIndex):
-                        lvl0 = df.columns.get_level_values(0)
-                        col_name = 'Adj Close' if 'Adj Close' in lvl0 else 'Close'
-                        series = df[col_name].squeeze()
-                    else:
-                        col_name = 'Adj Close' if 'Adj Close' in df.columns else 'Close'
-                        series = df[col_name].squeeze()
-                    if isinstance(series, pd.Series) and not series.empty:
-                        combined_data[t] = series
+                s_adj = extract_series(df, ('Adj Close', 'Close'), ticker=t)
+                s_cls = extract_series(df, ('Close', 'Adj Close'), ticker=t)
+                if isinstance(s_adj, pd.Series) and not s_adj.empty:
+                    s_adj.index = pd.to_datetime(s_adj.index).tz_localize(None)
+                    s_cls.index = pd.to_datetime(s_cls.index).tz_localize(None)
+                    adj_map[t] = s_adj
+                    close_map[t] = s_cls
             except Exception:
                 pass
 
-        if not combined_data or len(combined_data) < len(tickers):
+        if len(adj_map) < len(tickers):
+            return None, None
+        return pd.DataFrame(adj_map)[tickers], pd.DataFrame(close_map)[tickers]
+
+
+def compute_perf_snapshot(adj_df, close_df, tickers=PERF_TICKERS):
+    """Computes live price plus 5-day (1W), monthly (21d), and yearly (252d) total returns."""
+    perf = {}
+    for t in tickers:
+        s_adj = adj_df[t].dropna()
+        s_cls = close_df[t].dropna()
+        price = float(s_cls.iloc[-1]) if not s_cls.empty else float(s_adj.iloc[-1])
+
+        def pct_over(days):
+            if len(s_adj) > days and float(s_adj.iloc[-(days + 1)]) > 0:
+                return (float(s_adj.iloc[-1]) / float(s_adj.iloc[-(days + 1)])) - 1.0
             return None
-        return pd.DataFrame(combined_data)[tickers]
+
+        perf[t] = {
+            'price': price,
+            'ret_5d': pct_over(5),
+            'ret_1m': pct_over(21),
+            'ret_1y': pct_over(252),
+        }
+    return perf
+
+
+def compute_strategy_state(data):
+    """Replays 5-year history sequentially so every hysteresis latch matches exact live state."""
+    sma_200_series = data['QQQ'].rolling(200).mean()
+    qqq_ret_series = data['QQQ'].pct_change()
+    vol_20_series = qqq_ret_series.rolling(20).std(ddof=1) * np.sqrt(252.0)
+    ext_ratio_series = data['QQQ'] / sma_200_series
+
+    hyg_ret_series = data['HYG'].pct_change(20)
+    iei_ret_series = data['IEI'].pct_change(20)
+    credit_stress_series = hyg_ret_series < iei_ret_series
+    vix_panic_series = data['^VIX'] > data['^VIX3M']
+    macro_raw_series = vix_panic_series & credit_stress_series
+
+    start_idx = 200
+    trend_gate_on = bool(data['QQQ'].iloc[start_idx - 1] >= sma_200_series.iloc[start_idx - 1])
+    above_count = 2 if trend_gate_on else 0
+
+    macro_on = False
+    macro_clear_streak = 2
+
+    vol_latch_on = bool(vol_20_series.iloc[start_idx - 1] > 0.26)
+    ext_latch_on = bool(ext_ratio_series.iloc[start_idx - 1] > 1.20)
+
+    hist_state = []
+    hist_asset = []
+
+    for i in range(start_idx, len(data)):
+        p_q = float(data['QQQ'].iloc[i])
+        sma_q = float(sma_200_series.iloc[i])
+        v_20 = float(vol_20_series.iloc[i])
+        e_rat = float(ext_ratio_series.iloc[i])
+        m_raw = bool(macro_raw_series.iloc[i])
+
+        # 1. Macro Breaker: ON immediately; releases after 2 consecutive clear days.
+        if m_raw:
+            macro_on = True
+            macro_clear_streak = 0
+        else:
+            macro_clear_streak += 1
+            if macro_on and macro_clear_streak >= 2:
+                macro_on = False
+
+        # 2. Trend Gate: Exit if QQQ < 0.98 * SMA200; re-enter after 2 consecutive closes > SMA200.
+        if p_q > sma_q:
+            above_count += 1
+        else:
+            above_count = 0
+
+        if not trend_gate_on:
+            if above_count >= 2:
+                trend_gate_on = True
+        else:
+            if p_q < (sma_q * 0.98):
+                trend_gate_on = False
+
+        # 3. Volatility Latch: ON when vol20 > 26.0%; OFF only when vol20 < 21.0%.
+        if not vol_latch_on and v_20 > 0.26:
+            vol_latch_on = True
+        elif vol_latch_on and v_20 < 0.21:
+            vol_latch_on = False
+
+        # 4. Overextension Step-Down: ON when QQQ > 1.20 * SMA200; OFF only when < 1.17 * SMA200.
+        if not ext_latch_on and e_rat > 1.20:
+            ext_latch_on = True
+        elif ext_latch_on and e_rat < 1.17:
+            ext_latch_on = False
+
+        # Decision Hierarchy (100% Single-Asset Target)
+        if macro_on or (not trend_gate_on):
+            state, asset = "RED", "SGOV"
+        elif vol_latch_on:
+            state, asset = "ORANGE", "SCHD"
+        elif ext_latch_on:
+            state, asset = "EXTENDED", "SCHD"
+        else:
+            state, asset = "GREEN", "TQQQ"
+
+        hist_state.append(state)
+        hist_asset.append(asset)
+
+    return {
+        'sma_200': float(sma_200_series.iloc[-1]),
+        'vol_20': float(vol_20_series.iloc[-1]),
+        'ext_ratio': float(ext_ratio_series.iloc[-1]),
+        'hyg_ret': float(hyg_ret_series.iloc[-1]),
+        'iei_ret': float(iei_ret_series.iloc[-1]),
+        'vix_panic': bool(vix_panic_series.iloc[-1]),
+        'credit_stress': bool(credit_stress_series.iloc[-1]),
+        'macro_raw_today': bool(macro_raw_series.iloc[-1]),
+        'macro_on': macro_on,
+        'macro_clear_streak': macro_clear_streak,
+        'trend_gate_on': trend_gate_on,
+        'above_count': above_count,
+        'vol_latch_on': vol_latch_on,
+        'ext_latch_on': ext_latch_on,
+        'active_state': hist_state[-1],
+        'prev_day_state': hist_state[-2] if len(hist_state) > 1 else hist_state[-1],
+        'active_asset': hist_asset[-1],
+        'prev_day_asset': hist_asset[-2] if len(hist_asset) > 1 else hist_asset[-1],
+    }
+
+
+def fmt_pct_html(val):
+    if val is None:
+        return '<span style="color:#666666;">N/A</span>'
+    color = "#007a00" if val >= 0 else "#cc0000"
+    return f'<span style="color:{color}; font-weight:600;">{val*100:+.2f}%</span>'
 
 
 # ==============================================================================
-# UI HEADER & DOCUMENTATION EXPANDER
+# UI HEADER, REFRESH BUTTON & DOCUMENTATION EXPANDER
 # ==============================================================================
-st.title("ROTH IRA — (70/30 TQQQ / SCHD / SGOV)")
-st.caption(f"Server Time (EST): {get_est_time().strftime('%Y-%m-%d %I:%M:%S %p')} | Evaluated daily at 3:45 PM ET via Dividend-Adjusted Prices")
+hdr_col, btn_col = st.columns([3, 1])
+with hdr_col:
+    st.title("Roth IRA")
+with btn_col:
+    st.write("")
+    if st.button("🔄 Refresh", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
 
-with st.expander("📄 View Official Locked Strategy Documentation "):
+st.caption(f"Server Time (ET): {get_et_time().strftime('%Y-%m-%d %I:%M:%S %p')} | Daily @ 3:45 PM ET (Adj Close)")
+
+with st.expander("📄 View Official Locked Strategy Documentation"):
     st.markdown(STRATEGY_DOCS)
 
 # ==============================================================================
 # MAIN BACKEND & SIMULATION ENGINE
 # ==============================================================================
-with st.spinner("Fetching Market Data and Running Simulation Engine..."):
-    data = fetch_data_with_retry(TICKERS)
+with st.spinner("Fetching Market Data and Running Strategy Engine..."):
+    data, raw_close = fetch_data_with_retry(TICKERS)
 
 if data is None or data.empty:
     st.error("Connection Failed: No data returned from Yahoo Finance.")
     st.stop()
 
-if isinstance(data.columns, pd.MultiIndex):
-    data.columns = data.columns.droplevel(0)
+data = data.sort_index().ffill().dropna(subset=TICKERS)
+raw_close = raw_close.sort_index().ffill().reindex(data.index)
 
-data = data.ffill().dropna(subset=TICKERS)
-
-if data.empty:
-    st.error("Data is empty after aligning tickers.")
+if data.empty or len(data) < 205:
+    st.error("Insufficient history: Need 205+ aligned trading days.")
     st.stop()
 
 last_row = data.iloc[-1]
@@ -137,194 +315,68 @@ if nan_tickers:
     st.error(f"CRITICAL DATA MISSING (NaN): {', '.join(nan_tickers)}\nTry again in 15 minutes.")
     st.stop()
 
-MIN_HISTORY = 205
-for t in ['QQQ', 'TQQQ', 'SCHD', 'SGOV', 'HYG', 'IEI']:
-    if data[t].notna().sum() < MIN_HISTORY:
-        st.error(f"INSUFFICIENT HISTORY: {t} needs {MIN_HISTORY}+ trading days.")
-        st.stop()
+s = compute_strategy_state(data)
+perf = compute_perf_snapshot(data, raw_close, PERF_TICKERS)
 
-# ---------------------------------------------------------
-# TECHNICAL & MACRO SERIES COMPUTATION (DIVIDEND ADJUSTED)
-# ---------------------------------------------------------
-sma_200_series = data['QQQ'].rolling(200).mean()
-qqq_ret_series = data['QQQ'].pct_change()
-vol_20_series = qqq_ret_series.rolling(20).std(ddof=1) * np.sqrt(252.0)
-
-hyg_ret_series = data['HYG'].pct_change(20)
-iei_ret_series = data['IEI'].pct_change(20)
-credit_stress_series = hyg_ret_series < iei_ret_series
-vix_panic_series = data['^VIX'] > data['^VIX3M']
-macro_raw_series = vix_panic_series & credit_stress_series
-
-# ---------------------------------------------------------
-# STATEFUL SIMULATION ENGINE (FROZEN SPEC v1)
-# ---------------------------------------------------------
-start_idx = 200
-trend_gate_on = bool(data['QQQ'].iloc[start_idx - 1] >= sma_200_series.iloc[start_idx - 1])
-above_count = 2 if trend_gate_on else 0
-
-macro_on = False
-macro_clear_streak = 2
-
-vol_latch_on = bool(vol_20_series.iloc[start_idx - 1] > 0.26)
-
-hist_sleeve = []
-hist_w_tqqq = []
-hist_w_schd = []
-hist_w_sgov = []
-hist_sim_tqqq = []
-hist_guardrail_trim = []
-
-sim_w_tqqq = 0.0
-sim_w_schd = 1.0
-sim_w_sgov = 0.0
-prev_sleeve = None
-
-for i in range(start_idx, len(data)):
-    p_q = float(data['QQQ'].iloc[i])
-    sma_q = float(sma_200_series.iloc[i])
-    v_20 = float(vol_20_series.iloc[i])
-    m_raw = bool(macro_raw_series.iloc[i])
-
-    # 1. MACRO BREAKER: Turns ON the day it fires; turns OFF after 2 consecutive false days.
-    if m_raw:
-        macro_on = True
-        macro_clear_streak = 0
-    else:
-        if macro_on:
-            macro_clear_streak += 1
-            if macro_clear_streak >= 2:
-                macro_on = False
-        else:
-            macro_clear_streak += 1
-
-    # 2. TREND GATE: Exit if QQQ < 0.98 x SMA200; re-enter after 2 consecutive closes > SMA200.
-    if p_q > sma_q:
-        above_count += 1
-    else:
-        above_count = 0
-
-    if not trend_gate_on:
-        if above_count >= 2:
-            trend_gate_on = True
-    else:
-        if p_q < (sma_q * 0.98):
-            trend_gate_on = False
-
-    # 3. VOLATILITY LATCH: Tracked every day. ON when vol20 > 26%; OFF only when vol20 < 21%.
-    if not vol_latch_on and v_20 > 0.26:
-        vol_latch_on = True
-    elif vol_latch_on and v_20 < 0.21:
-        vol_latch_on = False
-
-    # 4. SLEEVE & 5. CORE (30% SCHD permanently)
-    if macro_on or (not trend_gate_on):
-        sleeve = "SGOV"
-        tw_tqqq, tw_schd, tw_sgov = 0.00, 0.30, 0.70
-    elif vol_latch_on:
-        sleeve = "SCHD"
-        tw_tqqq, tw_schd, tw_sgov = 0.00, 1.00, 0.00
-    else:
-        sleeve = "TQQQ"
-        tw_tqqq, tw_schd, tw_sgov = 0.70, 0.30, 0.00
-
-    # 6. SIMULATED DRIFT & 80% UPPER GUARDRAIL TRACKING
-    guardrail_trim_today = False
-    if i == start_idx or sleeve != prev_sleeve:
-        sim_w_tqqq, sim_w_schd, sim_w_sgov = tw_tqqq, tw_schd, tw_sgov
-    else:
-        r_tqqq = float(data['TQQQ'].iloc[i] / data['TQQQ'].iloc[i - 1])
-        r_schd = float(data['SCHD'].iloc[i] / data['SCHD'].iloc[i - 1])
-        r_sgov = float(data['SGOV'].iloc[i] / data['SGOV'].iloc[i - 1])
-        tot = (sim_w_tqqq * r_tqqq) + (sim_w_schd * r_schd) + (sim_w_sgov * r_sgov)
-        if tot > 0:
-            sim_w_tqqq = (sim_w_tqqq * r_tqqq) / tot
-            sim_w_schd = (sim_w_schd * r_schd) / tot
-            sim_w_sgov = (sim_w_sgov * r_sgov) / tot
-
-        if sleeve == "TQQQ" and sim_w_tqqq >= 0.80:
-            guardrail_trim_today = True
-            sim_w_tqqq, sim_w_schd, sim_w_sgov = 0.70, 0.30, 0.00
-
-    prev_sleeve = sleeve
-    hist_sleeve.append(sleeve)
-    hist_w_tqqq.append(tw_tqqq)
-    hist_w_schd.append(tw_schd)
-    hist_w_sgov.append(tw_sgov)
-    hist_sim_tqqq.append(sim_w_tqqq)
-    hist_guardrail_trim.append(guardrail_trim_today)
-
-# ---------------------------------------------------------
-# EXTRACT CURRENT BAR & STATE TRANSITION CHECK
-# ---------------------------------------------------------
 cur = data.iloc[-1]
 last_bar_date = data.index[-1].strftime('%Y-%m-%d')
 q_price = float(cur['QQQ'])
-sma_200 = float(sma_200_series.iloc[-1])
+sma_200 = s['sma_200']
 exit_band_98 = sma_200 * 0.98
-vol_20 = float(vol_20_series.iloc[-1])
-hyg_ret = float(hyg_ret_series.iloc[-1])
-iei_ret = float(iei_ret_series.iloc[-1])
-vix_panic = bool(vix_panic_series.iloc[-1])
-credit_stress = bool(credit_stress_series.iloc[-1])
-macro_raw_today = bool(macro_raw_series.iloc[-1])
+ext_band_120 = sma_200 * 1.20
+ext_band_117 = sma_200 * 1.17
 
-active_sleeve = hist_sleeve[-1]
-prev_day_sleeve = hist_sleeve[-2] if len(hist_sleeve) > 1 else active_sleeve
-tw_tqqq = hist_w_tqqq[-1]
-tw_schd = hist_w_schd[-1]
-tw_sgov = hist_w_sgov[-1]
-sim_tqqq_weight = hist_sim_tqqq[-1]
-guardrail_trim_today = hist_guardrail_trim[-1]
+active_state = s['active_state']
+prev_day_state = s['prev_day_state']
+active_asset = s['active_asset']
+prev_day_asset = s['prev_day_asset']
 
-state_changed = (active_sleeve != prev_day_sleeve)
+asset_changed = (active_asset != prev_day_asset)
+state_changed = (active_state != prev_day_state)
 
-if state_changed:
-    if active_sleeve in ("TQQQ", "SGOV"):
-        action_note = f"STATE-SWITCH RESET TODAY ({prev_day_sleeve} -> {active_sleeve}: Set 70% {active_sleeve} / 30% SCHD)"
-    else:
-        action_note = f"STATE SWITCH TODAY ({prev_day_sleeve} -> SCHD: Set 100% SCHD)"
-elif guardrail_trim_today:
-    action_note = "80% UPPER GUARDRAIL HIT TODAY (Trim TQQQ to 70.0%, Add Proceeds to SCHD!)"
+if asset_changed:
+    action_note = f"TRADE TODAY: SWITCH 100% {prev_day_asset} -> 100% {active_asset}"
+elif state_changed:
+    action_note = f"STATE SHIFT ({prev_day_state} -> {active_state}) — STAY 100% {active_asset} (NO TRADE)"
 else:
-    action_note = "NO STATE SWITCH (Hold Existing Positions; Check 80% Cap if Holding TQQQ)"
+    action_note = f"NO TRADE REQUIRED — HOLD 100% {active_asset}"
 
 # Format Top Signal Banner
-if active_sleeve == "SGOV":
-    title = "🔴 RED SIGNAL: DEFENSIVE CASH SLEEVE (70% SGOV / 30% SCHD)"
-    alloc = "TARGET STATE: 0.0% TQQQ  |  30.0% SCHD (Core)  |  70.0% SGOV (Sleeve)"
+if active_state == "RED":
+    title = "🔴 RED SIGNAL: DEFENSIVE CASH (100% SGOV)"
+    alloc = "BUY / HOLD: 100% SGOV (or BIL / Treasury Money Market)"
     drivers = []
-    if macro_on:
+    if s['macro_on']:
         drivers.append("Macro Breaker ON")
-    if not trend_gate_on:
-        drivers.append("Trend Gate OFF (< 0.98 x SMA200)")
+    if not s['trend_gate_on']:
+        drivers.append("Trend Gate OFF (< 0.98 × SMA200)")
     reason = f"{' & '.join(drivers)} | {action_note}"
     box_color = "#ffcccc"
-elif active_sleeve == "SCHD":
-    title = "🟡 YELLOW SIGNAL: VOLATILITY LATCH ON (100% SCHD)"
-    alloc = "TARGET STATE: 0.0% TQQQ  |  100.0% SCHD (30% Core + 70% Sleeve)  |  0.0% SGOV"
-    reason = f"Trend Gate ON + Macro OFF, but Vol Latch ON (vol20 = {vol_20*100:.2f}%) | {action_note}"
+elif active_state == "ORANGE":
+    title = "🟠 ORANGE SIGNAL: HIGH-VOLATILITY REGIME (100% SCHD)"
+    alloc = "BUY / HOLD: 100% SCHD (Volatility Defense)"
+    reason = f"Vol Latch ON (vol20 = {s['vol_20']*100:.2f}%, exit < 21.0%) | {action_note}"
+    box_color = "#ffe5cc"
+elif active_state == "EXTENDED":
+    title = "🟡 EXTENDED SIGNAL: OVERBOUGHT STEP-DOWN (100% SCHD)"
+    alloc = "BUY / HOLD: 100% SCHD (Overbought Step-Down)"
+    reason = f"QQQ / SMA200 = {s['ext_ratio']:.3f}x (exit < 1.170x) | {action_note}"
     box_color = "#fff2cc"
 else:
-    if guardrail_trim_today:
-        title = "🟠 ORANGE SIGNAL: 80% GUARDRAIL TRIM (RESET TO 70% TQQQ / 30% SCHD)"
-        box_color = "#ffe5cc"
-    else:
-        title = "🟢 GREEN SIGNAL: RISK-ON GROWTH SLEEVE (70% TQQQ / 30% SCHD)"
-        box_color = "#ccffcc"
-    alloc = "TARGET STATE: 70.0% TQQQ (Sleeve)  |  30.0% SCHD (Core)  |  0.0% SGOV"
-    reason = f"Trend Gate ON + Macro OFF + Vol Latch OFF (vol20 = {vol_20*100:.2f}%) | {action_note}"
-
+    title = "🟢 GREEN SIGNAL: RISK-ON GROWTH (100% TQQQ)"
+    alloc = "BUY / HOLD: 100% TQQQ"
+    reason = f"All Defenses Clear (vol20 = {s['vol_20']*100:.2f}%, ratio = {s['ext_ratio']:.3f}x) | {action_note}"
+    box_color = "#ccffcc"
 
 # ==============================================================================
-# STREAMLIT UI LAYOUT & RENDERING
+# STREAMLIT UI LAYOUT & RENDERING (MOBILE-OPTIMIZED)
 # ==============================================================================
 
 # 1. TOP SIGNAL BANNER
 st.markdown(
     f"""
-    <div style="background-color: {box_color}; padding: 18px; border-radius: 8px; border: 2px solid #333333; margin-bottom: 20px;">
-        <h2 style="color: #111111; margin-top: 0; margin-bottom: 8px; font-size: 22px;">{title}</h2>
+    <div style="background-color: {box_color}; padding: 16px; border-radius: 8px; border: 2px solid #333333; margin-bottom: 16px;">
+        <h2 style="color: #111111; margin-top: 0; margin-bottom: 6px; font-size: 20px; line-height: 1.25;">{title}</h2>
         <p style="color: #111111; font-weight: bold; font-size: 15px; margin-bottom: 6px;">{alloc}</p>
         <p style="color: #222222; font-size: 13px; margin-bottom: 0;">{reason}</p>
     </div>
@@ -332,148 +384,124 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-# 2. THREE-COLUMN METRICS GRID (RULES 1, 2, 3)
+# 2. ETF PRICES & PERFORMANCE BOX (TQQQ, QQQ, SCHD)
+rows_html = ""
+for t in PERF_TICKERS:
+    p = perf[t]
+    rows_html += (
+        f"<tr>"
+        f"<td>{t}</td>"
+        f"<td><b>${p['price']:.2f}</b></td>"
+        f"<td>{fmt_pct_html(p['ret_5d'])}</td>"
+        f"<td>{fmt_pct_html(p['ret_1m'])}</td>"
+        f"<td>{fmt_pct_html(p['ret_1y'])}</td>"
+        f"</tr>"
+    )
+
+st.markdown(
+    f"""
+    <div style="background-color: #ffffff; padding: 14px; border-radius: 8px; border: 1px solid #dcdcdc; margin-bottom: 18px;">
+        <div style="font-weight: 700; color: #111111; font-size: 14px; margin-bottom: 6px;">
+            ETF Prices &amp; Performance (Adj. Gain / Loss)
+        </div>
+        <table class="perf-table">
+            <thead>
+                <tr>
+                    <th>Ticker</th>
+                    <th>Price</th>
+                    <th>5D (1W)</th>
+                    <th>1M (21d)</th>
+                    <th>1Y (252d)</th>
+                </tr>
+            </thead>
+            <tbody>{rows_html}</tbody>
+        </table>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+# 3. THREE-COLUMN RULES GRID (STACKS CLEANLY ON MOBILE)
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    st.subheader("1. Macro Breaker (Rule 1)")
-    st.metric("VIX (Spot)", f"{cur['^VIX']:.2f}")
-    st.metric("VIX3M (3-Month)", f"{cur['^VIX3M']:.2f}")
-    st.markdown(f"**Term Structure:** `{'INVERTED (VIX > VIX3M)' if vix_panic else 'NORMAL'}`")
-    
+    st.subheader("1. Macro Breaker")
+    c1a, c1b = st.columns(2)
+    c1a.metric("VIX (Spot)", f"{cur['^VIX']:.2f}")
+    c1b.metric("VIX3M (3M)", f"{cur['^VIX3M']:.2f}")
+    st.markdown(f"**Term Structure:** `{'INVERTED (PANIC)' if s['vix_panic'] else 'NORMAL'}`")
+
     st.divider()
-    st.metric("HYG (20d Ret)", f"{hyg_ret*100:+.2f}%")
-    st.metric("IEI (20d Ret)", f"{iei_ret*100:+.2f}%")
-    st.markdown(f"**Credit Spread:** `{'STRESS (HYG < IEI)' if credit_stress else 'HEALTHY'}`")
-    
+    c1c, c1d = st.columns(2)
+    c1c.metric("HYG (20d)", f"{s['hyg_ret']*100:+.2f}%")
+    c1d.metric("IEI (20d)", f"{s['iei_ret']*100:+.2f}%")
+    st.markdown(f"**Credit Spread:** `{'STRESS (HYG < IEI)' if s['credit_stress'] else 'HEALTHY'}`")
+
     st.divider()
-    if macro_on:
-        if macro_raw_today:
-            macro_txt = "ON (FIRED TODAY — 0/2d Clear)"
+    if s['macro_on']:
+        if s['macro_raw_today']:
+            macro_txt = "ON (FIRED — 0/2d Clear)"
         else:
-            macro_txt = f"ON (Cooling: {macro_clear_streak}/2d False)"
+            macro_txt = f"ON (Cooling: {s['macro_clear_streak']}/2d Clear)"
         st.markdown(f":red[**MACRO BREAKER: {macro_txt}**]")
     else:
-        st.markdown(":green[**MACRO BREAKER: OFF (CLEAR)**]")
+        st.markdown(":green[**MACRO BREAKER: OFF (PASS)**]")
     st.divider()
-   
+
 with col2:
-    st.subheader("2. Trend Gate (Rule 2)")
+    st.subheader("2. Trend Gate")
     st.metric("QQQ (Adj Close)", f"${q_price:.2f}")
-    st.metric("200 SMA (Re-Entry)", f"${sma_200:.2f}")
-    st.metric("0.98 x SMA200 (Exit)", f"${exit_band_98:.2f}")
-    
+    c2a, c2b = st.columns(2)
+    c2a.metric("200 SMA", f"${sma_200:.2f}")
+    c2b.metric("0.98× Exit", f"${exit_band_98:.2f}")
+
     st.divider()
-    if trend_gate_on:
+    if s['trend_gate_on']:
         pct_above_exit = ((q_price / exit_band_98) - 1.0) * 100.0
-        st.markdown(f":green[**GATE ON (+{pct_above_exit:.2f}% vs 0.98 Exit)**]")
+        st.markdown(f":green[**GATE ON (+{pct_above_exit:.2f}% vs Exit)**]")
     else:
-        st.markdown(f":red[**GATE OFF (Closes > SMA200: {above_count}/2)**]")
+        st.markdown(f":red[**GATE OFF (Closes > SMA200: {s['above_count']}/2)**]")
     st.divider()
-   
+
 with col3:
-    st.subheader("3. Vol Latch & Sleeve (Rules 3-6)")
-    st.metric("QQQ 20d Sample Vol", f"{vol_20*100:.2f}%")
+    st.subheader("3. Vol & Extended")
+    st.metric("QQQ 20d Vol", f"{s['vol_20']*100:.2f}%")
     st.markdown("**Thresholds:** `ON > 26%` | `OFF < 21%`")
-    
-    if vol_latch_on:
-        st.markdown(":orange[**LATCH ON (-> 100% SCHD)**]")
+    if s['vol_latch_on']:
+        st.markdown(":orange[**VOL LATCH ON (→ 100% SCHD)**]")
     else:
-        st.markdown(":green[**LATCH OFF (Normal Vol)**]")
-        
+        st.markdown(":green[**VOL LATCH OFF (Normal Vol)**]")
+
     st.divider()
-    st.markdown(f"**TQQQ:** `${cur['TQQQ']:.2f}`")
-    st.markdown(f"**SCHD:** `${cur['SCHD']:.2f}`")
-    st.markdown(f"**SGOV:** `${cur['SGOV']:.2f}`")
-    
-    if state_changed:
-        st.markdown(f":red[**STATE SWITCH: {prev_day_sleeve} -> {active_sleeve}**]")
-    elif guardrail_trim_today:
-        st.markdown(":orange[**80% GUARDRAIL HIT**]")
+    st.metric("QQQ / SMA200", f"{s['ext_ratio']:.3f}x")
+    st.caption(f"1.20x: ${ext_band_120:.2f} | 1.17x: ${ext_band_117:.2f}")
+    if s['ext_latch_on']:
+        st.markdown(":orange[**EXTENDED ON (→ 100% SCHD)**]")
     else:
-        st.markdown(f":green[**SLEEVE STATUS: HOLD {active_sleeve}**]")
+        st.markdown(":green[**EXTENDED OFF (Not Overbought)**]")
 
-
-# ==============================================================================
-# 4. ROTH IRA DOLLAR, SHARE & 80% GUARDRAIL CALCULATOR
-# ==============================================================================
-st.markdown("---")
-st.subheader("4. Roth IRA Position, 80% Guardrail & Cash-Flow Calculator")
-
-c_in1, c_in2 = st.columns([1, 1])
-with c_in1:
-    account_balance = st.number_input("Total Roth IRA Balance ($):", min_value=0.0, value=230000.0, step=1000.0, format="%.2f")
-with c_in2:
-    current_tqqq_dlr = st.number_input("Current TQQQ Value ($) [Optional 80% Check]:", min_value=0.0, value=0.0, step=500.0, format="%.2f")
-
-p_tqqq = float(cur['TQQQ'])
-p_schd = float(cur['SCHD'])
-p_sgov = float(cur['SGOV'])
-
-dlr_tqqq = account_balance * tw_tqqq
-dlr_schd = account_balance * tw_schd
-dlr_sgov = account_balance * tw_sgov
-
-sh_tqqq = dlr_tqqq / p_tqqq if p_tqqq > 0 else 0.0
-sh_schd = dlr_schd / p_schd if p_schd > 0 else 0.0
-sh_sgov = dlr_sgov / p_sgov if p_sgov > 0 else 0.0
-
-# Display Table via Pandas DataFrame
-calc_df = pd.DataFrame([
-    {
-        "Ticker / Role": "TQQQ (70% Growth Sleeve)",
-        "Target Weight": f"{tw_tqqq*100:.1f}%",
-        "Live Price": f"${p_tqqq:.2f}",
-        "Target Dollars ($)": f"${dlr_tqqq:,.2f}",
-        "Target Shares (Exact / Whole)": f"{sh_tqqq:,.2f} sh ({int(sh_tqqq):,} whole)"
-    },
-    {
-        "Ticker / Role": "SCHD (30% Core / 100% Vol Latch)",
-        "Target Weight": f"{tw_schd*100:.1f}%",
-        "Live Price": f"${p_schd:.2f}",
-        "Target Dollars ($)": f"${dlr_schd:,.2f}",
-        "Target Shares (Exact / Whole)": f"{sh_schd:,.2f} sh ({int(sh_schd):,} whole)"
-    },
-    {
-        "Ticker / Role": "SGOV (70% Macro/Trend-Off Sleeve)",
-        "Target Weight": f"{tw_sgov*100:.1f}%",
-        "Live Price": f"${p_sgov:.2f}",
-        "Target Dollars ($)": f"${dlr_sgov:,.2f}",
-        "Target Shares (Exact / Whole)": f"{sh_sgov:,.2f} sh ({int(sh_sgov):,} whole)"
-    }
-])
-
-st.table(calc_df)
-
-# Guardrail & Cash Flow Messages
-if account_balance > 0 and current_tqqq_dlr > 0 and active_sleeve == "TQQQ":
-    live_tqqq_pct = (current_tqqq_dlr / account_balance) * 100.0
-    if live_tqqq_pct >= 80.0:
-        trim_dlr = current_tqqq_dlr - dlr_tqqq
-        trim_sh = trim_dlr / p_tqqq if p_tqqq > 0 else 0.0
-        st.error(f"⚠️ **80% CAP HIT ({live_tqqq_pct:.1f}%):** Trim `${trim_dlr:,.2f}` (`{trim_sh:,.1f}` shares) TQQQ -> Buy SCHD!")
-    elif live_tqqq_pct < 70.0:
-        st.success(f"Live TQQQ: `{live_tqqq_pct:.1f}%` (<70%) | **Cash Routing (DRIP OFF):** Buy TQQQ (Underweight)")
+    st.divider()
+    if asset_changed:
+        st.markdown(f":red[**ACTION: SWITCH {prev_day_asset} → {active_asset}**]")
+    elif state_changed:
+        st.markdown(f":blue[**SHIFT ({prev_day_state} → {active_state}) | HOLD {active_asset}**]")
     else:
-        st.info(f"Live TQQQ: `{live_tqqq_pct:.1f}%` (70%-80% Band) | Hold & Route New Cash/Divs to SCHD")
-else:
-    st.caption(f"Calculated for `${account_balance:,.2f}` Total Account Value (Active Sleeve: `{active_sleeve}`)")
-
+        st.markdown(f":green[**ACTION: HOLD 100% {active_asset}**]")
 
 # ==============================================================================
 # RULES LEGEND FOOTER
 # ==============================================================================
-st.markdown("---")
+st.caption(f"Latest Market Bar Evaluated: {last_bar_date} (Dividend-Adjusted Close)")
 st.markdown(
     """
-    <div style="background-color: #f8f8f8; padding: 12px; border-radius: 5px; border: 1px solid #dcdcdc;">
-        <p style="font-weight: bold; color: #111111; margin-bottom: 4px;">LOCKED EXECUTION RULES — ROTH IRA 70/30 TQQQ/SCHD/SGOV (CHECK DAILY @ 3:45 PM ET, DIVIDEND-ADJUSTED PRICES)</p>
-        <ul style="font-size: 12px; color: #333333; margin-bottom: 0; padding-left: 20px;">
-            <li><b>1. MACRO BREAKER:</b> Raw = (VIX > VIX3M) AND (HYG 20d ret < IEI 20d ret). Turns ON day it fires; turns OFF after 2 consecutive false days.</li>
-            <li><b>2. TREND GATE:</b> Exit only if QQQ close < 0.98 x SMA200. Re-enter after 2 consecutive closes above SMA200.</li>
-            <li><b>3. VOLATILITY LATCH:</b> vol20 = 20d sample std of QQQ daily returns x sqrt(252), tracked daily. ON when vol20 > 26%; OFF only when vol20 < 21%.</li>
-            <li><b>4 & 5. SLEEVE (70%) + CORE (30% SCHD):</b> Macro ON or Trend OFF -> 70% SGOV / 30% SCHD | Else Latch ON -> 100% SCHD | Else -> 70% TQQQ / 30% SCHD.</li>
-            <li><b>6 & 7. REBALANCE & FREEZE:</b> Reset 70/30 on switch into TQQQ or SGOV. Trim TQQQ to 70% if >= 80% of account. DRIP OFF (route cash to underweight). Frozen 12 mos.</li>
+    <div style="background-color: #f8f8f8; padding: 12px; border-radius: 6px; border: 1px solid #dcdcdc; margin-top: 8px;">
+        <p style="font-weight: bold; color: #111111; margin-bottom: 4px; font-size: 13px;">LOCKED EXECUTION RULES — STRATEGY Ss + 1.2x SCHD (DAILY @ 3:45 PM ET)</p>
+        <ul style="font-size: 12px; color: #333333; margin-bottom: 0; padding-left: 18px;">
+            <li><b>1. MACRO BREAKER:</b> (^VIX &gt; ^VIX3M) AND (HYG 20d ret &lt; IEI 20d ret) → RED (100% SGOV) immediately. Releases after 2 consecutive clear days.</li>
+            <li><b>2. TREND GATE:</b> Exit to RED (100% SGOV) if QQQ &lt; 0.98 × SMA200. Re-enter only after 2 consecutive closes above SMA200.</li>
+            <li><b>3. VOLATILITY LATCH:</b> QQQ 20d annualized realized vol &gt; 26.0% → ORANGE (100% SCHD). Stays in SCHD until vol20 &lt; 21.0%.</li>
+            <li><b>4. OVEREXTENSION STEP-DOWN:</b> QQQ &gt; 1.20 × SMA200 → EXTENDED (100% SCHD). Stays in SCHD until QQQ &lt; 1.17 × SMA200.</li>
+            <li><b>HIERARCHY:</b> RED (100% SGOV) → ORANGE (100% SCHD) → EXTENDED (100% SCHD) → GREEN (100% TQQQ).</li>
         </ul>
     </div>
     """,
