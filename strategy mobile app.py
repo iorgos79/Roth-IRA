@@ -290,7 +290,7 @@ else:
 # Format Top Signal Banner
 if active_state == "RED":
     title = "🔴 RED SIGNAL: DEFENSIVE CASH (100% SGOV)"
-    alloc = "BUY / HOLD: 100% SGOV (or BIL / Treasury Money Market)"
+    alloc = "BUY / HOLD: 100% SGOV (Treasury Money Market)"
     drivers = []
     if s['macro_on']:
         drivers.append("Macro Breaker ON")
